@@ -196,13 +196,30 @@ var _debounce: Timer
 func _ready() -> void:
 	_player = $Player
 	_player.finished.connect(_on_playback_finished)
-	_ud_path = ProjectSettings.globalize_path("res://userdata.json")
-	_an_path = ProjectSettings.globalize_path("res://analysis.json")
+	# Your data lives WITH the audio library (outside the code repo), so it
+	# survives moving the library and is never touched by repo housekeeping.
+	var data_dir := _data_dir()
+	_ud_path = data_dir.path_join("userdata.json")
+	_an_path = data_dir.path_join("analysis.json")
 	_an_out_path = ProjectSettings.globalize_path("user://envelope.json")
 	_load_userdata()
 	_load_analysis()
 	_build_ui()
 	_load_index()
+
+
+## Directory for user data (ratings / play counts / tags) and analysis results:
+## the library root from library.cfg (e.g. S:\code\sound_lib_data). Falls back to
+## the project folder only if the config can't be read.
+func _data_dir() -> String:
+	var cfg := ProjectSettings.globalize_path("res://../library.cfg").simplify_path()
+	if FileAccess.file_exists(cfg):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(cfg))
+		if typeof(d) == TYPE_DICTIONARY and d.has("library_root"):
+			var root := String(d["library_root"]).replace("\\", "/")
+			if DirAccess.dir_exists_absolute(root):
+				return root
+	return ProjectSettings.globalize_path("res://")
 
 
 # ===========================================================================
@@ -1045,7 +1062,11 @@ func _load_userdata() -> void:
 func _save_userdata() -> void:
 	var f := FileAccess.open(_ud_path, FileAccess.WRITE)
 	if f == null:
-		push_warning("Could not write user data: %s" % _ud_path)
+		var msg := "ERROR: could not save your data to %s (code %d)" % [
+			_ud_path, FileAccess.get_open_error()]
+		push_warning(msg)
+		if _status_label:
+			_status_label.text = msg
 		return
 	f.store_string(JSON.stringify(_userdata))
 

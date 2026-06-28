@@ -100,8 +100,12 @@ the sliders respond instantly. `app/analysis.json` stores the counts.
   an AND term (a quick filter); use "find keyword" to search the list itself.
 
 ### Your data (ratings + play counts + keywords)
-Stored separately from the index in `app/userdata.json`, keyed by each file's
-relative path — so it **survives re-indexing** and library moves. It's
+Stored in **`<library_root>/userdata.json`** (e.g.
+`S:\code\sound_lib_data\userdata.json`) — i.e. **with the audio, outside this
+code repo** — keyed by each file's relative path. So it **survives re-indexing,
+lives alongside the library it describes, and is never touched by repo cleanup**.
+The location is taken from `library_root` in `library.cfg`, so it follows the
+library if you move it. (`analysis.json`, the Sounds-column data, sits next to it.) It's
 gitignored by default (personal data); remove the `/app/userdata.json` line from
 `.gitignore` if you'd rather version it.
 

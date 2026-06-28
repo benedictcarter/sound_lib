@@ -18,8 +18,12 @@ for non-obvious gotchas.
   Godot app needs no separate config.
 - ~7,000 files; all get library/supplier (tracklist, else folder-name fallback).
   ~6,250 match a tracklist (have URL); ~5,488 carry a `bext` description.
-- **User data** (rating + play count + tags) lives in `app/userdata.json` (keyed
-  by relative path, gitignored), NOT in index.json — survives re-indexing.
+- **User data** (rating + play count + tags) lives in `<library_root>/userdata.json`
+  (e.g. S:\code\sound_lib_data\userdata.json), keyed by relative path — OUTSIDE
+  the repo, with the audio. Path resolved in `_data_dir()` from library.cfg.
+  `analysis.json` sits beside it. NEVER `rm` these from repo cleanup (a past bug
+  deleted a user's tags when they were in app/). Not in index.json -> survives
+  re-indexing.
   Plays increment on the player's `finished` signal (end reached, not Stop).
   Rating is set by clicking stars in the Rating cell (`item_mouse_selected` +
   `get_item_area_rect`); right-click clears. Tags ("My Keywords") are an inline-

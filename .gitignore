@@ -2,9 +2,11 @@
 /index.json
 /app/index.json
 
-# --- Personal ratings / play counts (your data; un-ignore to version it) ---
+# NOTE: your data (ratings/plays/tags -> userdata.json) and gap-analysis results
+# (analysis.json) now live in the library data folder (library_root, e.g.
+# S:\code\sound_lib_data), OUTSIDE this repo, so they can't be committed and are
+# never touched by repo cleanup. These entries remain only to catch stray copies.
 /app/userdata.json
-# --- Gap-analysis results (derived; rebuilt by the analyser / analyze.py) ---
 /app/analysis.json
 
 # --- Godot editor cache / build artifacts ---
