@@ -65,9 +65,12 @@ or:
 - **Audition** — select a row (autoplay) or double-click; transport bar has
   play/pause, stop, seek and volume. "Open folder" reveals the file on disk.
 - **Rate** — click the stars directly in the **Rating** column (left-click a
-  star to set 1-5, right-click to clear). The "Rate selected" bar at the bottom
+  star to set 1-5, right-click to clear). Hovering the cell shows a gold preview
+  of the rating that a click will apply. The "Rate selected" bar at the bottom
   also works on the selected row. Sortable. (Clicking the Rating cell does not
   play the file.)
+- **Resize columns** — drag the divider between column headers. The horizontal-
+  resize cursor appears when you hover a divider.
 - **My Keywords** — your own tags per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
   included in the search box, so you can find files by your own tags.

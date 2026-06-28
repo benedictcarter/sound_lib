@@ -50,6 +50,11 @@ const STOPWORDS := {
 const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
+# Default column widths (indices match COL_*). Columns are resizable at runtime.
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 200]
+const COL_MIN_W := 28       # smallest a column can be dragged to
+const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
+
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
 var _filtered: Array = []     # current view
@@ -91,6 +96,17 @@ var _stream_len: float = 0.0
 var _playing_rec: Variant = null     # record currently loaded in the player
 var _playing_item: TreeItem = null   # its row, for live cell updates
 var _last_click_col: int = -1        # column of the last mouse click (gates play)
+var _hover_item: TreeItem = null     # row whose Rating cell is showing a preview
+var _hover_star: int = -1            # previewed star count under the cursor
+var _star_glyph_w: float = 0.0       # measured pixel width of one star glyph
+
+# column resizing (header divider drag)
+var _col_w: Array = []               # current width of each column
+var _resize_col: int = -1            # column whose right divider is being dragged
+var _resize_start_x: float = 0.0
+var _resize_start_w: int = 0
+var _header_h: float = 0.0           # measured header (title row) height, cached
+var _suppress_title_click: bool = false
 
 var _debounce: Timer
 
@@ -163,27 +179,19 @@ func _build_ui() -> void:
 	_tree.hide_root = true
 	_tree.select_mode = Tree.SELECT_ROW
 	_tree.allow_reselect = true
+	# Column widths (resizable by dragging the dividers in the header row).
+	_col_w = COL_DEFAULT_W.duplicate()
 	for c in COL_COUNT:
 		_tree.set_column_title(c, COL_TITLES[c])
 		_tree.set_column_clip_content(c, true)
-	# Column sizing: filename/library/supplier flexible, numbers fixed-ish.
-	_set_col_size(COL_FILENAME, 0.0, 460)
-	_set_col_size(COL_LIBRARY, 0.0, 180)
-	_set_col_size(COL_SUPPLIER, 0.0, 140)
-	_set_col_size(COL_BUNDLE, 0.0, 85)
-	_set_col_size(COL_DURATION, 0.0, 65)
-	_set_col_size(COL_RATE, 0.0, 72)
-	_set_col_size(COL_BIT, 0.0, 42)
-	_set_col_size(COL_CH, 0.0, 38)
-	_set_col_size(COL_SIZE, 0.0, 78)
-	_set_col_size(COL_RATING, 0.0, 95)
-	_set_col_size(COL_PLAYS, 0.0, 58)
-	_set_col_size(COL_TAGS, 0.0, 200)
+		_tree.set_column_expand(c, false)
+		_tree.set_column_custom_minimum_width(c, _col_w[c])
 	_tree.column_title_clicked.connect(_on_title_clicked)
 	_tree.item_selected.connect(_on_row_selected)
 	_tree.item_activated.connect(_on_row_activated)
 	_tree.item_mouse_selected.connect(_on_tree_mouse_selected)
 	_tree.item_edited.connect(_on_tree_item_edited)
+	_tree.gui_input.connect(_on_tree_gui_input)
 
 	# --- table + keyword panel (split) ----------------------------------
 	var split := HSplitContainer.new()
@@ -332,15 +340,6 @@ func _build_keyword_panel() -> Control:
 	_kw_list.item_clicked.connect(_on_keyword_clicked)
 	panel.add_child(_kw_list)
 	return panel
-
-
-func _set_col_size(col: int, expand_ratio: float, min_w: int) -> void:
-	if expand_ratio > 0.0:
-		_tree.set_column_expand(col, true)
-		_tree.set_column_expand_ratio(col, int(expand_ratio * 10))
-	else:
-		_tree.set_column_expand(col, false)
-	_tree.set_column_custom_minimum_width(col, min_w)
 
 
 # ===========================================================================
@@ -571,6 +570,9 @@ func _sort_filtered() -> void:
 
 
 func _on_title_clicked(col: int, _mouse_btn: int) -> void:
+	if _suppress_title_click:                 # a divider drag, not a sort click
+		_suppress_title_click = false
+		return
 	if col == _sort_col:
 		_sort_asc = not _sort_asc
 	else:
@@ -590,6 +592,8 @@ func _on_title_clicked(col: int, _mouse_btn: int) -> void:
 #  Tree population
 # ===========================================================================
 func _populate_tree() -> void:
+	_hover_item = null   # items are about to be freed; drop the stale preview ref
+	_hover_star = -1
 	_tree.clear()
 	var root := _tree.create_item()
 	for rec in _filtered:
@@ -652,9 +656,7 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		if mouse_btn == MOUSE_BUTTON_RIGHT:
 			_apply_rating(rec, it, 0)          # right-click clears
 		elif mouse_btn == MOUSE_BUTTON_LEFT:
-			var rect := _tree.get_item_area_rect(it, COL_RATING)
-			var frac := (pos.x - rect.position.x) / maxf(rect.size.x, 1.0)
-			_apply_rating(rec, it, clampi(int(ceil(frac * 5.0)), 1, 5))
+			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
 	if col == COL_TAGS:
 		return                                 # let the inline editor handle it
@@ -668,6 +670,98 @@ func _on_tree_item_edited() -> void:
 		return
 	var rec: Variant = it.get_metadata(0)
 	_set_tags(rec, it.get_text(COL_TAGS))
+
+
+# ===========================================================================
+#  Column resizing — drag a divider in the header row (Tree has no native one)
+# ===========================================================================
+func _header_height() -> float:
+	if _header_h <= 0.0:
+		var root := _tree.get_root()
+		if root and root.get_first_child():
+			_header_h = _tree.get_item_area_rect(root.get_first_child()).position.y
+		if _header_h <= 0.0:
+			_header_h = 24.0
+	return _header_h
+
+
+# Column whose right divider sits under x (only within the header band), else -1.
+func _divider_at(pos: Vector2) -> int:
+	if pos.y > _header_height():
+		return -1
+	var x := -float(_tree.get_scroll().x)
+	for c in range(COL_COUNT):
+		x += _col_w[c]
+		if absf(pos.x - x) <= RESIZE_GRAB:
+			return c
+	return -1
+
+
+func _on_tree_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			var c := _divider_at(event.position)
+			if c >= 0:
+				_resize_col = c
+				_resize_start_x = event.position.x
+				_resize_start_w = _col_w[c]
+				_tree.accept_event()
+		elif _resize_col >= 0:
+			_resize_col = -1
+			_tree.accept_event()
+	elif event is InputEventMouseMotion:
+		if _resize_col >= 0:
+			var w := maxi(COL_MIN_W, _resize_start_w + int(event.position.x - _resize_start_x))
+			_col_w[_resize_col] = w
+			_tree.set_column_custom_minimum_width(_resize_col, w)
+			_suppress_title_click = true       # this drag isn't a sort click
+			_tree.accept_event()
+		else:
+			# show the horizontal-resize cursor when hovering a divider
+			_tree.mouse_default_cursor_shape = (
+				Control.CURSOR_HSIZE if _divider_at(event.position) >= 0
+				else Control.CURSOR_ARROW)
+
+
+## Which star (1-5) the x position falls on, measured against the actual drawn
+## star glyphs (left-aligned in the cell) so the cursor tip maps exactly.
+func _star_at(item: TreeItem, x: float) -> int:
+	if _star_glyph_w <= 0.0:
+		var font := _tree.get_theme_font("font")
+		var fsize := _tree.get_theme_font_size("font_size")
+		_star_glyph_w = font.get_string_size("★", HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x
+	var rect := _tree.get_item_area_rect(item, COL_RATING)
+	var ml := 0
+	if _tree.has_theme_constant("inner_item_margin_left"):
+		ml = _tree.get_theme_constant("inner_item_margin_left")
+	var x0 := rect.position.x + ml
+	return clampi(int(floor((x - x0) / maxf(_star_glyph_w, 1.0))) + 1, 1, 5)
+
+
+## Live hover preview: highlight, in gold, the rating that a click would apply.
+func _update_rating_hover() -> void:
+	var lp := _tree.get_local_mouse_position()
+	var item: TreeItem = null
+	var star := -1
+	if Rect2(Vector2.ZERO, _tree.size).has_point(lp) \
+			and _tree.get_column_at_position(lp) == COL_RATING:
+		item = _tree.get_item_at_position(lp)
+		if item != null:
+			star = _star_at(item, lp.x)
+	if item == _hover_item and star == _hover_star:
+		return
+	if _hover_item != null and is_instance_valid(_hover_item):
+		_restore_rating_cell(_hover_item)      # un-preview the previous row
+	_hover_item = item
+	_hover_star = star
+	if item != null:
+		item.set_text(COL_RATING, _stars(star))
+		item.set_custom_color(COL_RATING, Color(1.0, 0.82, 0.2))
+
+
+func _restore_rating_cell(item: TreeItem) -> void:
+	item.clear_custom_color(COL_RATING)
+	item.set_text(COL_RATING, _stars(_get_rating(item.get_metadata(0))))
 
 
 func _selected_rec() -> Variant:
@@ -745,6 +839,7 @@ func _on_reveal() -> void:
 
 
 func _process(_delta: float) -> void:
+	_update_rating_hover()
 	if _player.stream == null or _stream_len <= 0.0:
 		return
 	if _player.playing and not _seeking:

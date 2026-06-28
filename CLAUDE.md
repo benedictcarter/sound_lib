@@ -25,6 +25,9 @@ for non-obvious gotchas.
   `get_item_area_rect`); right-click clears. Tags ("My Keywords") are an inline-
   editable column (`item_edited`), space/comma separated, and feed the search.
   `_last_click_col` gates double-click playback so editing Rating/Tags ≠ play.
+  Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
+  shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
+  dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.
 - **Keyword panel** computed in-app at load (`_build_keywords`): tokens from
   filename + library, de-duped per library; frequency = #libraries containing
   the token. Click appends the token to the search box (AND quick-filter).

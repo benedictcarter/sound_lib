@@ -43,6 +43,28 @@ only ~100px for the panel, and the split overflowed. **Fix:** size the window
 (and/or trim columns) so `sum(column widths) + panel_min + handle < window`.
 Lesson: an HSplit pane can't shrink a Tree below its total column width.
 
+## Godot Tree has no native column resizing — and no per-star click mapping
+Two related in-cell interactions had to be hand-rolled on Tree:
+* **Click-a-star rating:** mapping the click x across the *full cell width* in
+  fifths is wrong — the star glyphs are narrower than the cell and left-aligned,
+  so the cursor landed ~one star right of what applied. Fix: measure the star
+  glyph width (`font.get_string_size("★")`), take `x0 = cell_rect.x +
+  inner_item_margin_left`, and `star = floor((x - x0)/glyph_w) + 1`. Drive a live
+  hover preview with the *same* function so it's WYSIWYG.
+* **Column resizing:** Tree has no draggable column dividers. Implement via the
+  `gui_input` signal: detect a press within `RESIZE_GRAB` px of a column's right
+  edge *inside the header band* (header height = first row's
+  `get_item_area_rect().position.y`), then adjust `set_column_custom_minimum_width`
+  on drag. A drag also fires `column_title_clicked` (sort) on release — set a
+  `_suppress_title_click` flag during the drag and consume it in the sort handler.
+  Account for `get_scroll().x` when computing divider x positions.
+
+Verifying both via screenshots is unreliable: injected `SetCursorPos` motion
+isn't fed to Godot's input on a backgrounded window, so `get_local_mouse_position`
+never updates and hover/drag never trigger. Instead drive synthetic `InputEvent`
+objects into the handlers from a windowed `--script` test (needs a real window so
+`get_item_area_rect` returns valid layout; `--headless` gives zero-size rects).
+
 ## Tracklist files are mislabeled by extension
 The 2016 bundle ships `Tracklist.csv.xls` files that are actually plain CSV
 (they start with `FILENAME,...`, not the ZIP `PK` signature of real XLSX).
