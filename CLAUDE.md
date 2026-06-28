@@ -35,7 +35,25 @@ for non-obvious gotchas.
 - Godot tooling: `S:\code\godot\Godot_v4.6.3-stable_win64_console.exe` (console
   build prints to stdout — use for headless validation).
 
+## Gap analysis (sound counting + future chopping)
+- `indexer/gaps.py` — core detection (RMS-dBFS envelope; gap = run below
+  `silence_db` for >= `min_gap_s`; sounds = segments between gaps). Reads via
+  soundfile (handles 24-bit). Defaults from exploration: -60 dBFS, 1.5s gap.
+- `indexer/envelope.py <audio> <out.json>` — one-file envelope + per-file
+  suggested threshold (histogram valley); the Godot analyser calls this in a
+  Thread, caches the envelope, and re-detects live in GDScript (`_gd_find_segments`
+  mirrors gaps.py) as the sliders move. WaveGraph (inner class) draws it.
+- `indexer/analyze.py` — batch counts -> `app/analysis.json` (Sounds column).
+  Incremental; reads all audio (~217 GB) so a full run takes a while.
+- KEY finding: an ABSOLUTE -60 dBFS floor generalises far better than a
+  peak-relative threshold (a loud transient lifts a relative threshold into the
+  ambient bed and explodes false-gap counts). See LESSONS_LEARNT.md.
+- Next (phase 2): `indexer/chop.py` to split at gaps into `name_chop_NNN.wav`
+  and delete the original.
+
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)
+- Tune detection on sample files: `py indexer/explore_gaps.py`
+- Batch sound counts: `py indexer/analyze.py`
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`

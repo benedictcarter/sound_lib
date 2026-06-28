@@ -72,6 +72,27 @@ The 2016 bundle ships `Tracklist.csv.xls` files that are actually plain CSV
 otherwise parse as CSV — never trust the extension. Also skip the 2016
 "Complete Catalog" file: it's library-level, has no per-file FILENAME column.
 
+## Gap detection: an ABSOLUTE silence floor beats a peak-relative threshold
+Detecting "sounds separated by silence" across a heterogeneous library, the
+obvious idea — silence = peak − N dB — is actively worse than a fixed floor.
+A single loud transient (e.g. a bus horn in a field recording) raises the peak,
+so peak−30 lands *inside* the ambient bed and shatters a continuous recording
+into 100+ false gaps. A fixed **−60 dBFS** floor instead returns 1 ("don't
+chop") for every continuous recording tested (ambiences, room tones, onboard
+driving) and 2–3 only where there's genuine near-silence. −55 was already too
+high (cut into a −50 forest bed). Min-gap length is the real granularity knob.
+Mechanism: files are leveled to wildly different absolute loudnesses, but true
+silence sits near the same low floor regardless — so an absolute floor is the
+stable reference, not the per-file peak. Verified with `explore_gaps.py`.
+
+## Very long files make gaps visually tiny — and need streamed envelopes
+A 1 s gap in an 827 s file is ~0.1% of the graph width (~2 px), so dead-zone
+shading is invisible on huge files even when detection is correct — don't read a
+blank-looking graph as "broken". Also: never load a long file's samples whole
+(the 1935 s Hellcat is ~740 MB as float32). Stream a per-frame RMS envelope with
+`soundfile.blocks`, and cap envelope resolution (~8000 frames) so the JSON the
+app draws stays small.
+
 ## WAV indexing must not read the audio payload
 Naively reading whole files would mean touching 217 GB. Instead walk RIFF chunks
 and `seek()` past the `data` chunk (`csize` bytes, word-aligned to even). Only

@@ -4,6 +4,8 @@
 
 # --- Personal ratings / play counts (your data; un-ignore to version it) ---
 /app/userdata.json
+# --- Gap-analysis results (derived; rebuilt by the analyser / analyze.py) ---
+/app/analysis.json
 
 # --- Godot editor cache / build artifacts ---
 /app/.godot/

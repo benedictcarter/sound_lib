@@ -15,20 +15,22 @@ const COL_CH := 7
 const COL_SIZE := 8
 const COL_RATING := 9   # user data (app/userdata.json)
 const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
-const COL_TAGS := 11    # user data (your own keywords; editable inline)
-const COL_COUNT := 12
+const COL_SOUNDS := 11  # analysis: detected sound count (app/analysis.json)
+const COL_TAGS := 12    # user data (your own keywords; editable inline)
+const COL_COUNT := 13
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
-	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "My Keywords",
+	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds", "My Keywords",
 ]
-# Which record field each column sorts/reads. Bundle, Rating, Plays and Tags are
-# special-cased in _sort_value (the last three live in user data, not the record).
+# Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds and
+# Tags are special-cased in _sort_value (they don't live in the record).
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "",
 ]
-const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_RATING, COL_PLAYS]
+const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
+	COL_RATING, COL_PLAYS, COL_SOUNDS]
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -51,9 +53,67 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 200]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 200]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
+
+# Gap analysis defaults (chosen from exploration; tunable live in the analyser).
+const DEF_SILENCE_DB := -60.0
+const DEF_MIN_GAP_S := 1.5
+const DEF_MIN_SOUND_S := 0.3
+
+
+## Draws the loudness (dBFS) envelope vs time, the silence threshold, the
+## detected "dead zones" (gaps) and a playback cursor.
+class WaveGraph extends Control:
+	var levels := PackedFloat32Array()
+	var segments: Array = []          # [[start_frame, end_frame], ...]
+	var threshold_db: float = DEF_SILENCE_DB
+	var playhead: float = -1.0        # 0..1; < 0 hides
+	const TOP_DB := 0.0
+	const BOT_DB := -90.0
+
+	func _yfor(db: float) -> float:
+		return clampf((TOP_DB - db) / (TOP_DB - BOT_DB), 0.0, 1.0) * size.y
+
+	func _draw() -> void:
+		var w := size.x
+		var h := size.y
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0.09, 0.10, 0.13))
+		var n := levels.size()
+		if n == 0:
+			draw_string(get_theme_default_font(), Vector2(10, h * 0.5 + 5),
+				"Select a WAV and press Analyse to preview its sounds / gaps",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.5, 0.5, 0.55))
+			return
+		# dead zones = gaps between detected segments (what gets cut)
+		var gap_col := Color(0.85, 0.25, 0.25, 0.20)
+		var prev_end := 0
+		for s in segments:
+			var ge: int = int(s[0])
+			if ge > prev_end:
+				var gx := float(prev_end) / n * w
+				draw_rect(Rect2(gx, 0, float(ge) / n * w - gx, h), gap_col)
+			prev_end = int(s[1])
+		if n > prev_end:
+			var gx := float(prev_end) / n * w
+			draw_rect(Rect2(gx, 0, w - gx, h), gap_col)
+		# loudness envelope (one bar per pixel column)
+		var col := Color(0.40, 0.85, 0.78)
+		for x in int(w):
+			var fi := mini(int(float(x) / w * n), n - 1)
+			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), col, 1.0)
+		# silence threshold
+		var ty := _yfor(threshold_db)
+		draw_line(Vector2(0, ty), Vector2(w, ty), Color(1.0, 0.6, 0.1), 1.5)
+		# chop boundaries (start of each detected sound)
+		for s in segments:
+			var xs := float(s[0]) / n * w
+			draw_line(Vector2(xs, 0), Vector2(xs, h), Color(0.35, 1.0, 0.55, 0.7), 1.0)
+		# playback cursor
+		if playhead >= 0.0:
+			draw_line(Vector2(playhead * w, 0), Vector2(playhead * w, h),
+				Color(1, 1, 1, 0.85), 1.0)
 
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
@@ -67,6 +127,28 @@ var _sort_asc: bool = true
 var _userdata: Dictionary = {}
 var _ud_path: String = ""
 var _star_btns: Array = []    # 5 rating buttons in the player bar
+
+# analysis (gap detection) -- { rel_path : {"sounds": int} }, persisted apart.
+var _analysis: Dictionary = {}
+var _an_path: String = ""
+
+# analyser panel / live preview state
+var _graph: WaveGraph
+var _an_levels := PackedFloat32Array()    # cached envelope for the loaded file
+var _an_frame_s: float = 0.02
+var _an_duration: float = 0.0
+var _an_rec: Variant = null               # record currently in the analyser
+var _an_suggested: float = DEF_SILENCE_DB
+var _sil_slider: HSlider
+var _gap_slider: HSlider
+var _snd_slider: HSlider
+var _sil_lbl: Label
+var _gap_lbl: Label
+var _snd_lbl: Label
+var _an_status: Label
+var _an_thread: Thread = null
+var _an_busy: bool = false
+var _an_out_path: String = ""
 
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
@@ -115,7 +197,10 @@ func _ready() -> void:
 	_player = $Player
 	_player.finished.connect(_on_playback_finished)
 	_ud_path = ProjectSettings.globalize_path("res://userdata.json")
+	_an_path = ProjectSettings.globalize_path("res://analysis.json")
+	_an_out_path = ProjectSettings.globalize_path("user://envelope.json")
 	_load_userdata()
+	_load_analysis()
 	_build_ui()
 	_load_index()
 
@@ -202,6 +287,8 @@ func _build_ui() -> void:
 	split.add_child(_build_keyword_panel())
 	# big offset -> table takes the slack, keyword panel rests at its min width
 	split.set_deferred("split_offset", 5000)
+
+	_build_analyser(root)
 
 	# --- player bar -----------------------------------------------------
 	var pbar := HBoxContainer.new()
@@ -340,6 +427,69 @@ func _build_keyword_panel() -> Control:
 	_kw_list.item_clicked.connect(_on_keyword_clicked)
 	panel.add_child(_kw_list)
 	return panel
+
+
+func _build_analyser(root: VBoxContainer) -> void:
+	var bar := HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 8)
+	root.add_child(bar)
+
+	var an_btn := Button.new()
+	an_btn.text = "Analyse selected"
+	an_btn.pressed.connect(_analyse_selected)
+	bar.add_child(an_btn)
+
+	var sug := Button.new()
+	sug.text = "Suggest"
+	sug.tooltip_text = "Set the silence threshold from this file's loudness histogram"
+	sug.pressed.connect(_apply_suggested)
+	bar.add_child(sug)
+
+	_sil_slider = _add_slider(bar, "Silence", -90, -30, 1, DEF_SILENCE_DB)
+	_sil_lbl = bar.get_child(bar.get_child_count() - 1) as Label
+	_gap_slider = _add_slider(bar, "Min gap", 0.2, 5.0, 0.1, DEF_MIN_GAP_S)
+	_gap_lbl = bar.get_child(bar.get_child_count() - 1) as Label
+	_snd_slider = _add_slider(bar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
+	_snd_lbl = bar.get_child(bar.get_child_count() - 1) as Label
+
+	var save := Button.new()
+	save.text = "Save count"
+	save.tooltip_text = "Store this sound count in the Sounds column"
+	save.pressed.connect(_save_current_count)
+	bar.add_child(save)
+
+	_an_status = Label.new()
+	_an_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_an_status.text = "Analyser idle."
+	bar.add_child(_an_status)
+
+	_graph = WaveGraph.new()
+	_graph.custom_minimum_size = Vector2(0, 120)
+	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(_graph)
+	_update_param_labels()
+
+
+# Adds "label [slider]" to a bar; returns the slider and appends a value Label
+# (so the caller can grab it as the last child).
+func _add_slider(bar: HBoxContainer, name: String, lo: float, hi: float,
+		step: float, val: float) -> HSlider:
+	var l := Label.new()
+	l.text = name
+	bar.add_child(l)
+	var s := HSlider.new()
+	s.min_value = lo
+	s.max_value = hi
+	s.step = step
+	s.value = val
+	s.custom_minimum_size = Vector2(120, 0)
+	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	s.value_changed.connect(func(_v): _on_param_changed())
+	bar.add_child(s)
+	var vl := Label.new()
+	vl.custom_minimum_size = Vector2(58, 0)
+	bar.add_child(vl)
+	return s
 
 
 # ===========================================================================
@@ -546,6 +696,8 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _get_rating(rec)
 	if col == COL_PLAYS:
 		return _get_plays(rec)
+	if col == COL_SOUNDS:
+		return _get_sounds(rec)
 	if col == COL_TAGS:
 		return _get_tags(rec)
 	return rec.get(COL_FIELD[col])
@@ -608,7 +760,7 @@ func _populate_tree() -> void:
 		it.set_text(COL_CH, "" if rec.get("channels") == null else str(int(rec.get("channels"))))
 		it.set_text(COL_SIZE, _fmt_size(rec.get("size")))
 		_apply_userdata_cells(it, rec)
-		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS]:
+		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS, COL_SOUNDS]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
@@ -619,6 +771,8 @@ func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
 	it.set_text(COL_RATING, _stars(rating))
 	var plays := _get_plays(rec)
 	it.set_text(COL_PLAYS, "" if plays == 0 else str(plays))
+	var sc := _get_sounds(rec)
+	it.set_text(COL_SOUNDS, "" if sc <= 0 else str(sc))
 	it.set_text(COL_TAGS, _get_tags(rec))
 	it.set_editable(COL_TAGS, true)            # double-click to edit
 	it.set_tooltip_text(COL_TAGS, "Double-click to edit. Separate keywords with spaces or commas.")
@@ -840,6 +994,15 @@ func _on_reveal() -> void:
 
 func _process(_delta: float) -> void:
 	_update_rating_hover()
+	# playback cursor on the analyser graph (only when the playing file is the
+	# one shown in the analyser)
+	if _graph and not _an_levels.is_empty():
+		var ph := -1.0
+		if _player.playing and _playing_rec != null and _playing_rec == _an_rec and _stream_len > 0.0:
+			ph = clampf(_player.get_playback_position() / _stream_len, 0.0, 1.0)
+		if ph != _graph.playhead:
+			_graph.playhead = ph
+			_graph.queue_redraw()
 	if _player.stream == null or _stream_len <= 0.0:
 		return
 	if _player.playing and not _seeking:
@@ -942,6 +1105,165 @@ func _stars(n: int) -> String:
 	if n <= 0:
 		return ""
 	return "★".repeat(n) + "☆".repeat(5 - n)
+
+
+# ===========================================================================
+#  Gap analysis / sound-count visualiser
+# ===========================================================================
+func _load_analysis() -> void:
+	if not FileAccess.file_exists(_an_path):
+		return
+	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_an_path))
+	if typeof(data) == TYPE_DICTIONARY:
+		_analysis = data
+
+
+func _save_analysis() -> void:
+	var f := FileAccess.open(_an_path, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(_analysis))
+
+
+func _get_sounds(rec: Dictionary) -> int:
+	var a: Variant = _analysis.get(String(rec.get("path", "")))
+	return int(a.get("sounds", 0)) if typeof(a) == TYPE_DICTIONARY else 0
+
+
+func _update_param_labels() -> void:
+	if _sil_lbl: _sil_lbl.text = "%d dB" % int(_sil_slider.value)
+	if _gap_lbl: _gap_lbl.text = "%.1f s" % _gap_slider.value
+	if _snd_lbl: _snd_lbl.text = "%.2f s" % _snd_slider.value
+
+
+# --- run the Python envelope extractor for the selected file (off-thread) ---
+func _analyse_selected() -> void:
+	var rec: Variant = _selected_rec()
+	if rec == null:
+		_an_status.text = "Select a row first."
+		return
+	if String(rec.get("ext", "")).to_lower() != "wav":
+		_an_status.text = "Analyser supports WAV only."
+		return
+	if _an_busy:
+		return
+	var audio := _abs_path(rec)
+	if not FileAccess.file_exists(audio):
+		_an_status.text = "File not found: %s" % audio
+		return
+	if FileAccess.file_exists(_an_out_path):
+		DirAccess.remove_absolute(_an_out_path)
+	var script := ProjectSettings.globalize_path("res://").path_join("../indexer/envelope.py").simplify_path()
+	_an_rec = rec
+	_an_busy = true
+	_an_status.text = "Analysing %s ..." % String(rec.get("filename", ""))
+	_an_thread = Thread.new()
+	_an_thread.start(_an_run.bind(script, audio, _an_out_path))
+
+
+func _an_run(script: String, audio: String, out: String) -> void:
+	var output: Array = []
+	var code := OS.execute("py", [script, audio, out], output, true)
+	if code == -1:                       # py launcher not found; try python
+		OS.execute("python", [script, audio, out], output, true)
+	call_deferred("_an_finished")
+
+
+func _exit_tree() -> void:
+	if _an_thread and _an_thread.is_started():
+		_an_thread.wait_to_finish()
+
+
+func _an_finished() -> void:
+	_an_busy = false
+	if _an_thread:
+		_an_thread.wait_to_finish()
+		_an_thread = null
+	if not FileAccess.file_exists(_an_out_path):
+		_an_status.text = "Analysis failed (no output). Is python on PATH?"
+		return
+	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_an_out_path))
+	if typeof(data) != TYPE_DICTIONARY or not data.get("ok", false):
+		_an_status.text = "Analysis error: %s" % (data.get("error", "?") if typeof(data) == TYPE_DICTIONARY else "?")
+		return
+	_an_levels = PackedFloat32Array(data["levels"])
+	_an_frame_s = float(data["frame_s"])
+	_an_duration = float(data["duration"])
+	_an_suggested = float(data["suggested_db"])
+	_graph.levels = _an_levels
+	_apply_suggested()        # also recomputes + redraws
+
+
+func _apply_suggested() -> void:
+	if _an_levels.is_empty():
+		return
+	_sil_slider.set_value_no_signal(_an_suggested)
+	_update_param_labels()
+	_on_param_changed()
+
+
+func _on_param_changed() -> void:
+	_update_param_labels()
+	if _an_levels.is_empty():
+		_graph.queue_redraw()
+		return
+	var segs := _gd_find_segments(_an_levels, _sil_slider.value,
+		_gap_slider.value, _snd_slider.value, _an_frame_s)
+	_graph.threshold_db = _sil_slider.value
+	_graph.segments = segs
+	_graph.queue_redraw()
+	var name := String(_an_rec.get("filename", "")) if typeof(_an_rec) == TYPE_DICTIONARY else "?"
+	_an_status.text = "%s  →  %d sound%s  (%d gaps)" % [
+		name, segs.size(), "" if segs.size() == 1 else "s", maxi(0, segs.size() - 1)]
+
+
+# GDScript port of indexer/gaps.find_segments — runs live as sliders move.
+func _gd_find_segments(levels: PackedFloat32Array, silence_db: float,
+		min_gap_s: float, min_sound_s: float, frame_s: float) -> Array:
+	var n := levels.size()
+	if n == 0:
+		return []
+	var min_gap_frames := maxi(1, int(round(min_gap_s / frame_s)))
+	var min_sound_frames := min_sound_s / frame_s
+	var segs: Array = []
+	var seg_start := -1
+	var quiet := 0
+	for i in n:
+		if levels[i] >= silence_db:
+			if seg_start < 0:
+				seg_start = i
+			quiet = 0
+		else:
+			quiet += 1
+			if seg_start >= 0 and quiet >= min_gap_frames:
+				var seg_end := i - quiet + 1
+				if (seg_end - seg_start) >= min_sound_frames:
+					segs.append([seg_start, seg_end])
+				seg_start = -1
+	if seg_start >= 0 and (n - seg_start) >= min_sound_frames:
+		segs.append([seg_start, n])
+	return segs
+
+
+func _save_current_count() -> void:
+	if typeof(_an_rec) != TYPE_DICTIONARY or _an_levels.is_empty():
+		_an_status.text = "Nothing analysed to save."
+		return
+	var segs := _gd_find_segments(_an_levels, _sil_slider.value,
+		_gap_slider.value, _snd_slider.value, _an_frame_s)
+	var key := String(_an_rec.get("path", ""))
+	_analysis[key] = {
+		"sounds": segs.size(),
+		"silence_db": _sil_slider.value,
+		"min_gap_s": _gap_slider.value,
+		"min_sound_s": _snd_slider.value,
+	}
+	_save_analysis()
+	# refresh the row's Sounds cell
+	var it := _tree.get_selected()
+	if it and it.get_metadata(0) == _an_rec:
+		it.set_text(COL_SOUNDS, str(segs.size()))
+	_an_status.text = "Saved: %s → %d sounds" % [
+		String(_an_rec.get("filename", "")), segs.size()]
 
 
 # ===========================================================================

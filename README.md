@@ -71,6 +71,23 @@ or:
   play the file.)
 - **Resize columns** — drag the divider between column headers. The horizontal-
   resize cursor appears when you hover a divider.
+
+### Gap analysis / "Sounds" (how many sounds are in a file)
+Long files often contain several sounds separated by silence. The analyser
+counts them and previews where it would chop.
+
+- Select a WAV and click **Analyse selected**. The graph shows the loudness
+  (dBFS) over time, the silence threshold (orange line) and the detected
+  **dead zones** (red) that separate the sounds. A white cursor tracks playback.
+- Tune live: **Silence** (what counts as silence, default −60 dBFS), **Min gap**
+  (how long a silence must be, default 1.5 s) and **Min sound** (ignore blips).
+  **Suggest** picks a threshold from the file's own loudness histogram.
+- **Save count** writes the result to the **Sounds** column.
+- To fill the column for the whole library at once:
+  `py indexer/analyze.py` (reads all audio; incremental on re-runs).
+
+Detection lives in `indexer/gaps.py` and is mirrored in the app (GDScript) so
+the sliders respond instantly. `app/analysis.json` stores the counts.
 - **My Keywords** — your own tags per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
   included in the search box, so you can find files by your own tags.
