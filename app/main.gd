@@ -29,6 +29,26 @@ const COL_FIELD := [
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_RATING, COL_PLAYS]
 
+# Tokens ignored by the keyword analysis: English filler + audio/file-format
+# noise (channel layouts, formats, mic patterns) that would otherwise dominate.
+const STOPWORDS := {
+	"the": true, "and": true, "for": true, "with": true, "from": true,
+	"into": true, "out": true, "off": true, "this": true, "that": true,
+	"are": true, "was": true, "has": true, "its": true, "you": true,
+	# short grammatical noise (prepositions / pronouns / articles)
+	"by": true, "on": true, "in": true, "at": true, "or": true, "of": true,
+	"an": true, "as": true, "no": true, "to": true, "is": true, "it": true,
+	"my": true, "be": true, "we": true, "up": true, "so": true, "re": true,
+	# file-format / channel / mic-pattern noise
+	"wav": true, "wave": true, "aif": true, "aiff": true, "flac": true,
+	"mp3": true, "ogg": true, "stereo": true, "mono": true, "ortf": true,
+	"xy": true, "ab": true, "ms": true, "db": true, "hz": true, "khz": true,
+	"bit": true, "bits": true, "ch": true, "mix": true, "master": true,
+	"final": true, "take": true, "ver": true, "version": true,
+}
+const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
+const KW_MIN_LEN := 2       # ignore 1-char tokens
+
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
 var _filtered: Array = []     # current view
@@ -52,6 +72,12 @@ var _autoplay: CheckButton
 var _tree: Tree
 var _count_label: Label
 var _status_label: Label
+
+# keyword analysis panel
+var _kw_list: ItemList
+var _kw_filter: LineEdit
+var _kw_header: Label
+var _keywords: Array = []   # [ [token, library_count], ... ] sorted desc
 
 # player
 var _player: AudioStreamPlayer
@@ -139,9 +165,9 @@ func _build_ui() -> void:
 		_tree.set_column_title(c, COL_TITLES[c])
 		_tree.set_column_clip_content(c, true)
 	# Column sizing: filename/library/supplier flexible, numbers fixed-ish.
-	_set_col_size(COL_FILENAME, 0.0, 520)
-	_set_col_size(COL_LIBRARY, 0.0, 190)
-	_set_col_size(COL_SUPPLIER, 0.0, 150)
+	_set_col_size(COL_FILENAME, 0.0, 460)
+	_set_col_size(COL_LIBRARY, 0.0, 180)
+	_set_col_size(COL_SUPPLIER, 0.0, 140)
 	_set_col_size(COL_BUNDLE, 0.0, 85)
 	_set_col_size(COL_DURATION, 0.0, 65)
 	_set_col_size(COL_RATE, 0.0, 72)
@@ -153,7 +179,16 @@ func _build_ui() -> void:
 	_tree.column_title_clicked.connect(_on_title_clicked)
 	_tree.item_selected.connect(_on_row_selected)
 	_tree.item_activated.connect(_on_row_activated)
-	root.add_child(_tree)
+
+	# --- table + keyword panel (split) ----------------------------------
+	var split := HSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(split)
+	split.add_child(_tree)
+	split.add_child(_build_keyword_panel())
+	# big offset -> table takes the slack, keyword panel rests at its min width
+	split.set_deferred("split_offset", 5000)
 
 	# --- player bar -----------------------------------------------------
 	var pbar := HBoxContainer.new()
@@ -261,6 +296,34 @@ func _add_filter(parent: HBoxContainer, label: String) -> OptionButton:
 	return o
 
 
+func _build_keyword_panel() -> Control:
+	var panel := VBoxContainer.new()
+	panel.custom_minimum_size = Vector2(250, 0)
+	panel.add_theme_constant_override("separation", 4)
+
+	_kw_header = Label.new()
+	_kw_header.text = "Keywords"
+	panel.add_child(_kw_header)
+
+	var hint := Label.new()
+	hint.text = "click to add to search"
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	panel.add_child(hint)
+
+	_kw_filter = LineEdit.new()
+	_kw_filter.placeholder_text = "find keyword..."
+	_kw_filter.clear_button_enabled = true
+	_kw_filter.text_changed.connect(func(_t): _populate_keyword_list())
+	panel.add_child(_kw_filter)
+
+	_kw_list = ItemList.new()
+	_kw_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_kw_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_kw_list.item_clicked.connect(_on_keyword_clicked)
+	panel.add_child(_kw_list)
+	return panel
+
+
 func _set_col_size(col: int, expand_ratio: float, min_w: int) -> void:
 	if expand_ratio > 0.0:
 		_tree.set_column_expand(col, true)
@@ -290,6 +353,100 @@ func _load_index() -> void:
 		_library_root, str(data.get("generated", "?"))
 	]
 	_populate_filters()
+	_build_keywords()
+	_apply()
+
+
+# ===========================================================================
+#  Keyword analysis  (frequency = number of distinct libraries containing it)
+# ===========================================================================
+func _tokenize(text: String) -> PackedStringArray:
+	# Lowercase, split on any run of non-alphanumeric chars (space _ - , . ( ) etc).
+	var out := PackedStringArray()
+	var cur := ""
+	for ch in text.to_lower():
+		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9"):
+			cur += ch
+		elif cur != "":
+			out.append(cur)
+			cur = ""
+	if cur != "":
+		out.append(cur)
+	return out
+
+
+func _keep_token(t: String) -> bool:
+	if t.length() < KW_MIN_LEN:
+		return false
+	if STOPWORDS.has(t):
+		return false
+	# drop pure-number tokens (001, 02, 2020...) but keep alphanumerics like "3d"
+	if t.is_valid_int():
+		return false
+	return true
+
+
+func _build_keywords() -> void:
+	# Group files into libraries, collect the UNIQUE token set per library
+	# (library name + every filename in it), then count how many libraries
+	# contain each token. So a big library counts a keyword only once.
+	var lib_tokens: Dictionary = {}   # lib_id -> { token: true }
+	for rec in _all:
+		var lib_id := "%s|%s|%s" % [
+			String(rec.get("bundle", "")),
+			String(rec.get("supplier", "")),
+			String(rec.get("library", "")),
+		]
+		var bag: Dictionary = lib_tokens.get(lib_id, {})
+		for t in _tokenize(String(rec.get("library", ""))):
+			if _keep_token(t):
+				bag[t] = true
+		for t in _tokenize(String(rec.get("filename", ""))):
+			if _keep_token(t):
+				bag[t] = true
+		lib_tokens[lib_id] = bag
+
+	var freq: Dictionary = {}
+	for lib_id in lib_tokens:
+		for t in lib_tokens[lib_id]:
+			freq[t] = int(freq.get(t, 0)) + 1
+
+	_keywords = []
+	for t in freq:
+		_keywords.append([t, freq[t]])
+	_keywords.sort_custom(func(a, b):
+		if a[1] != b[1]:
+			return a[1] > b[1]               # most frequent first
+		return a[0].naturalnocasecmp_to(b[0]) < 0
+	)
+	_populate_keyword_list()
+
+
+func _populate_keyword_list() -> void:
+	if _kw_list == null:
+		return
+	var filt := _kw_filter.text.strip_edges().to_lower()
+	_kw_list.clear()
+	var shown := 0
+	for pair in _keywords:
+		var token: String = pair[0]
+		if filt != "" and not token.contains(filt):
+			continue
+		var idx := _kw_list.add_item("%s  (%d)" % [token, pair[1]])
+		_kw_list.set_item_metadata(idx, token)
+		shown += 1
+		if shown >= KW_MAX_SHOWN:
+			break
+	_kw_header.text = "Keywords (%d) — n = libraries" % _keywords.size()
+
+
+func _on_keyword_clicked(index: int, _at: Vector2, _mouse_btn: int) -> void:
+	var token := String(_kw_list.get_item_metadata(index))
+	# Append as an AND term to the search box if not already present.
+	var terms := _search.text.strip_edges().to_lower().split(" ", false)
+	if token in terms:
+		return
+	_search.text = (_search.text.strip_edges() + " " + token).strip_edges()
 	_apply()
 
 
