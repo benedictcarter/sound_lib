@@ -1,0 +1,32 @@
+# --- Generated index (derived data, can be rebuilt by indexer) ---
+/index.json
+/app/index.json
+
+# --- Godot editor cache / build artifacts ---
+/app/.godot/
+/app/android/
+/app/export_presets.cfg
+*.translation
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Audio files (belt & braces: the library lives outside the repo in
+#     S:\code\sound_lib_data, but never let audio sneak into git) ---
+*.wav
+*.WAV
+*.aif
+*.aiff
+*.flac
+*.mp3
+*.ogg
+*.m4a
+*.wma
+*.aac
+
+# --- OS cruft ---
+Thumbs.db
+.DS_Store

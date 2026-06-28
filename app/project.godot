@@ -1,0 +1,22 @@
+; Engine configuration file.
+; Sound Library browser (Godot 4.6)
+
+config_version=5
+
+[application]
+
+config/name="Sound Library"
+config/description="Browse, search, filter and audition the Sonniss GDC game audio bundles."
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.6")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1400
+window/size/viewport_height=820
+window/size/initial_position_type=1
+
+[gui]
+
+theme/default_font_multichannel_signed_distance_field=true
