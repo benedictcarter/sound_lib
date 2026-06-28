@@ -18,6 +18,9 @@ for non-obvious gotchas.
   Godot app needs no separate config.
 - ~7,000 files; all get library/supplier (tracklist, else folder-name fallback).
   ~6,250 match a tracklist (have URL); ~5,488 carry a `bext` description.
+- **User data** (star rating + play count) lives in `app/userdata.json` (keyed
+  by relative path, gitignored), NOT in index.json — survives re-indexing.
+  Plays increment on the player's `finished` signal (end reached, not Stop).
 - Godot tooling: `S:\code\godot\Godot_v4.6.3-stable_win64_console.exe` (console
   build prints to stdout — use for headless validation).
 

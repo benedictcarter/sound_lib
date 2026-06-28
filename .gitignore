@@ -2,6 +2,9 @@
 /index.json
 /app/index.json
 
+# --- Personal ratings / play counts (your data; un-ignore to version it) ---
+/app/userdata.json
+
 # --- Godot editor cache / build artifacts ---
 /app/.godot/
 /app/android/

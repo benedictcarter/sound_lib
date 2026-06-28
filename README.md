@@ -64,6 +64,16 @@ or:
 - **Sort** — click any column header (click again to reverse).
 - **Audition** — select a row (autoplay) or double-click; transport bar has
   play/pause, stop, seek and volume. "Open folder" reveals the file on disk.
+- **Rate** — select a row, then click the stars in the "Rate selected" bar
+  (1-5, or Clear). Shown in the **Rating** column; sortable.
+- **Plays** — auto-increments each time a track plays through to the end
+  ("finished listening"); stopping early does not count. Sortable.
+
+### Your data (ratings + play counts)
+Stored separately from the index in `app/userdata.json`, keyed by each file's
+relative path — so it **survives re-indexing** and library moves. It's
+gitignored by default (personal data); remove the `/app/userdata.json` line from
+`.gitignore` if you'd rather version it.
 
 > Preview supports WAV (the other 4 files are `.aif`); for those, use "Open
 > folder".

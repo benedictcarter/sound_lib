@@ -13,18 +13,21 @@ const COL_RATE := 5
 const COL_BIT := 6
 const COL_CH := 7
 const COL_SIZE := 8
-const COL_COUNT := 9
+const COL_RATING := 9   # user data (app/userdata.json)
+const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
+const COL_COUNT := 11
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
-	"Duration", "Rate", "Bit", "Ch", "Size",
+	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays",
 ]
-# Which record field each column sorts/reads (Bundle handled specially).
+# Which record field each column sorts/reads. Bundle, Rating and Plays are
+# special-cased in _sort_value (Rating/Plays live in user data, not the record).
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "",
 ]
-const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE]
+const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_RATING, COL_PLAYS]
 
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
@@ -32,6 +35,12 @@ var _filtered: Array = []     # current view
 var _library_root: String = ""
 var _sort_col: int = COL_FILENAME
 var _sort_asc: bool = true
+
+# user data: { rel_path : { "rating": int 0-5, "plays": int } }  -- survives
+# re-indexing because it is stored separately from index.json.
+var _userdata: Dictionary = {}
+var _ud_path: String = ""
+var _star_btns: Array = []    # 5 rating buttons in the player bar
 
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
@@ -52,12 +61,17 @@ var _seeking: bool = false
 var _time_label: Label
 var _now_label: Label
 var _stream_len: float = 0.0
+var _playing_rec: Variant = null     # record currently loaded in the player
+var _playing_item: TreeItem = null   # its row, for live cell updates
 
 var _debounce: Timer
 
 
 func _ready() -> void:
 	_player = $Player
+	_player.finished.connect(_on_playback_finished)
+	_ud_path = ProjectSettings.globalize_path("res://userdata.json")
+	_load_userdata()
 	_build_ui()
 	_load_index()
 
@@ -125,15 +139,17 @@ func _build_ui() -> void:
 		_tree.set_column_title(c, COL_TITLES[c])
 		_tree.set_column_clip_content(c, true)
 	# Column sizing: filename/library/supplier flexible, numbers fixed-ish.
-	_set_col_size(COL_FILENAME, 0.0, 600)
-	_set_col_size(COL_LIBRARY, 0.0, 200)
-	_set_col_size(COL_SUPPLIER, 0.0, 160)
-	_set_col_size(COL_BUNDLE, 0.0, 90)
-	_set_col_size(COL_DURATION, 0.0, 70)
-	_set_col_size(COL_RATE, 0.0, 75)
-	_set_col_size(COL_BIT, 0.0, 45)
-	_set_col_size(COL_CH, 0.0, 40)
-	_set_col_size(COL_SIZE, 0.0, 80)
+	_set_col_size(COL_FILENAME, 0.0, 520)
+	_set_col_size(COL_LIBRARY, 0.0, 190)
+	_set_col_size(COL_SUPPLIER, 0.0, 150)
+	_set_col_size(COL_BUNDLE, 0.0, 85)
+	_set_col_size(COL_DURATION, 0.0, 65)
+	_set_col_size(COL_RATE, 0.0, 72)
+	_set_col_size(COL_BIT, 0.0, 42)
+	_set_col_size(COL_CH, 0.0, 38)
+	_set_col_size(COL_SIZE, 0.0, 78)
+	_set_col_size(COL_RATING, 0.0, 95)
+	_set_col_size(COL_PLAYS, 0.0, 58)
 	_tree.column_title_clicked.connect(_on_title_clicked)
 	_tree.item_selected.connect(_on_row_selected)
 	_tree.item_activated.connect(_on_row_activated)
@@ -160,15 +176,6 @@ func _build_ui() -> void:
 	_time_label.text = "0:00 / 0:00"
 	pbar.add_child(_time_label)
 
-	_seek = HSlider.new()
-	_seek.min_value = 0.0
-	_seek.max_value = 1.0
-	_seek.step = 0.001
-	_seek.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_seek.drag_started.connect(func(): _seeking = true)
-	_seek.drag_ended.connect(_on_seek_released)
-	pbar.add_child(_seek)
-
 	var vlab := Label.new()
 	vlab.text = "Vol"
 	pbar.add_child(vlab)
@@ -178,6 +185,7 @@ func _build_ui() -> void:
 	vol.step = 0.01
 	vol.value = 0.9
 	vol.custom_minimum_size = Vector2(110, 0)
+	vol.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	vol.value_changed.connect(_on_volume_changed)
 	pbar.add_child(vol)
 	_on_volume_changed(0.9)
@@ -187,10 +195,49 @@ func _build_ui() -> void:
 	reveal.pressed.connect(_on_reveal)
 	pbar.add_child(reveal)
 
-	# --- status ---------------------------------------------------------
+	# Seek slider LAST: an EXPAND_FILL child shoves trailing siblings off the
+	# right edge (same quirk as Tree expand columns), so nothing must follow it.
+	_seek = HSlider.new()
+	_seek.min_value = 0.0
+	_seek.max_value = 1.0
+	_seek.step = 0.001
+	_seek.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_seek.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_seek.drag_started.connect(func(): _seeking = true)
+	_seek.drag_ended.connect(_on_seek_released)
+	pbar.add_child(_seek)
+
+	# --- rating + now-playing row ---------------------------------------
+	# Rating controls first; the expanding now-playing label goes LAST so it
+	# doesn't push the star buttons off-screen.
+	var nbar := HBoxContainer.new()
+	nbar.add_theme_constant_override("separation", 6)
+	root.add_child(nbar)
+
+	var rlab := Label.new()
+	rlab.text = "Rate selected:"
+	nbar.add_child(rlab)
+	for i in range(1, 6):
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(34, 0)
+		b.tooltip_text = "%d star%s" % [i, "" if i == 1 else "s"]
+		b.pressed.connect(_on_star_pressed.bind(i))
+		nbar.add_child(b)
+		_star_btns.append(b)
+	var clr := Button.new()
+	clr.text = "Clear"
+	clr.pressed.connect(_on_star_pressed.bind(0))
+	nbar.add_child(clr)
+	_refresh_star_buttons(null)
+
+	nbar.add_child(VSeparator.new())
 	_now_label = Label.new()
 	_now_label.text = "No file loaded."
-	root.add_child(_now_label)
+	_now_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_now_label.clip_text = true
+	nbar.add_child(_now_label)
+
+	# --- status ---------------------------------------------------------
 
 	_status_label = Label.new()
 	root.add_child(_status_label)
@@ -326,13 +373,22 @@ func _apply() -> void:
 	_populate_tree()
 
 
+func _sort_value(rec: Dictionary, col: int) -> Variant:
+	# Rating/Plays come from user data; everything else from the record.
+	if col == COL_RATING:
+		return _get_rating(rec)
+	if col == COL_PLAYS:
+		return _get_plays(rec)
+	return rec.get(COL_FIELD[col])
+
+
 func _sort_filtered() -> void:
-	var field: String = COL_FIELD[_sort_col]
-	var numeric := _sort_col in NUMERIC_COLS
+	var col := _sort_col
+	var numeric := col in NUMERIC_COLS
 	var asc := _sort_asc
 	_filtered.sort_custom(func(a, b):
-		var va: Variant = a.get(field)
-		var vb: Variant = b.get(field)
+		var va: Variant = _sort_value(a, col)
+		var vb: Variant = _sort_value(b, col)
 		var r := 0
 		if numeric:
 			var fa := float(va) if va != null else -1.0
@@ -377,10 +433,18 @@ func _populate_tree() -> void:
 		it.set_text(COL_BIT, "" if rec.get("bit_depth") == null else str(int(rec.get("bit_depth"))))
 		it.set_text(COL_CH, "" if rec.get("channels") == null else str(int(rec.get("channels"))))
 		it.set_text(COL_SIZE, _fmt_size(rec.get("size")))
-		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE]:
+		_apply_userdata_cells(it, rec)
+		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
+
+
+func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
+	var rating := _get_rating(rec)
+	it.set_text(COL_RATING, _stars(rating))
+	var plays := _get_plays(rec)
+	it.set_text(COL_PLAYS, "" if plays == 0 else str(plays))
 
 
 # ===========================================================================
@@ -391,6 +455,7 @@ func _abs_path(rec: Dictionary) -> String:
 
 
 func _on_row_selected() -> void:
+	_refresh_star_buttons(_selected_rec())
 	if _autoplay.button_pressed:
 		_play_selected()
 
@@ -424,6 +489,8 @@ func _play_selected() -> void:
 	_player.stream = stream
 	_player.play()
 	_stream_len = stream.get_length()
+	_playing_rec = rec
+	_playing_item = _tree.get_selected()
 	_play_btn.text = "Pause"
 	_now_label.text = "Playing:  %s" % String(rec.get("filename", ""))
 
@@ -480,6 +547,84 @@ func _process(_delta: float) -> void:
 		_time_label.text = "%s / %s" % [_fmt_time(pos), _fmt_time(_stream_len)]
 	if not _player.playing and not _player.stream_paused and _play_btn.text == "Pause":
 		_play_btn.text = "Play"  # finished
+
+
+func _on_playback_finished() -> void:
+	# Fired only when the stream plays through to the end (not on Stop) -- i.e.
+	# the user finished listening. Count it.
+	_play_btn.text = "Play"
+	if _playing_rec == null:
+		return
+	var key := String(_playing_rec.get("path", ""))
+	var ud: Dictionary = _userdata.get(key, {})
+	ud["plays"] = int(ud.get("plays", 0)) + 1
+	_userdata[key] = ud
+	_save_userdata()
+	if _playing_item != null and is_instance_valid(_playing_item):
+		_apply_userdata_cells(_playing_item, _playing_rec)
+
+
+# ===========================================================================
+#  User data (ratings + play counts)  -- app/userdata.json
+# ===========================================================================
+func _load_userdata() -> void:
+	if not FileAccess.file_exists(_ud_path):
+		return
+	var f := FileAccess.open(_ud_path, FileAccess.READ)
+	if f == null:
+		return
+	var data: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(data) == TYPE_DICTIONARY:
+		_userdata = data
+
+
+func _save_userdata() -> void:
+	var f := FileAccess.open(_ud_path, FileAccess.WRITE)
+	if f == null:
+		push_warning("Could not write user data: %s" % _ud_path)
+		return
+	f.store_string(JSON.stringify(_userdata))
+
+
+func _get_rating(rec: Dictionary) -> int:
+	var ud: Variant = _userdata.get(String(rec.get("path", "")))
+	return int(ud.get("rating", 0)) if typeof(ud) == TYPE_DICTIONARY else 0
+
+
+func _get_plays(rec: Dictionary) -> int:
+	var ud: Variant = _userdata.get(String(rec.get("path", "")))
+	return int(ud.get("plays", 0)) if typeof(ud) == TYPE_DICTIONARY else 0
+
+
+func _on_star_pressed(rating: int) -> void:
+	var rec: Variant = _selected_rec()
+	if rec == null:
+		return
+	var key := String(rec.get("path", ""))
+	var ud: Dictionary = _userdata.get(key, {})
+	ud["rating"] = rating
+	_userdata[key] = ud
+	_save_userdata()
+	var it := _tree.get_selected()
+	if it != null:
+		_apply_userdata_cells(it, rec)
+	_refresh_star_buttons(rec)
+	# re-sort if the table is ordered by rating
+	if _sort_col == COL_RATING:
+		_sort_filtered()
+		_populate_tree()
+
+
+func _refresh_star_buttons(rec: Variant) -> void:
+	var rating := _get_rating(rec) if typeof(rec) == TYPE_DICTIONARY else 0
+	for i in range(_star_btns.size()):
+		_star_btns[i].text = "★" if (i + 1) <= rating else "☆"
+
+
+func _stars(n: int) -> String:
+	if n <= 0:
+		return ""
+	return "★".repeat(n) + "☆".repeat(5 - n)
 
 
 # ===========================================================================

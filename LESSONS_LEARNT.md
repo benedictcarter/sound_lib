@@ -17,6 +17,17 @@ fixed columns did NOT reserve their space against the expand calc.
 **Fix:** for a fits-on-screen table, give ALL columns fixed widths whose sum is
 < the window width (no expand). Deterministic and every column stays visible.
 
+## Same expand trap in HBoxContainer: put the EXPAND_FILL child LAST
+A `SIZE_EXPAND_FILL` slider/label in the *middle* of an HBox grew and pushed the
+siblings after it (volume slider, Open-folder button, star buttons) clean off the
+right edge — invisible the entire time across several screenshots before I caught
+it. Same shape as the Tree-column quirk: the expanding child grabs space without
+reserving room for trailing siblings.
+**Fix:** order bars so the expanding element is the *last* child (seek slider at
+the end of the transport bar; the expanding "now playing" label after the star
+buttons). Then there's nothing behind it to displace. Verify bottom bars in a
+real window capture — they're the easiest thing to silently lose off-screen.
+
 ## Screenshotting a Godot window when another app overlaps it
 `CopyFromScreen` grabs whatever pixels are on screen, and `SetForegroundWindow`
 is often refused by Windows (foreground-lock), so a covered window can't be
