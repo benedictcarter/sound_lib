@@ -21,6 +21,10 @@ for non-obvious gotchas.
 - **User data** (star rating + play count) lives in `app/userdata.json` (keyed
   by relative path, gitignored), NOT in index.json — survives re-indexing.
   Plays increment on the player's `finished` signal (end reached, not Stop).
+- **Keyword panel** computed in-app at load (`_build_keywords`): tokens from
+  filename + library, de-duped per library; frequency = #libraries containing
+  the token. Click appends the token to the search box (AND quick-filter).
+  Tune the `STOPWORDS` set in main.gd to filter noise words.
 - Godot tooling: `S:\code\godot\Godot_v4.6.3-stable_win64_console.exe` (console
   build prints to stdout — use for headless validation).
 

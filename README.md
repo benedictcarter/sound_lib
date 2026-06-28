@@ -68,6 +68,11 @@ or:
   (1-5, or Clear). Shown in the **Rating** column; sortable.
 - **Plays** — auto-increments each time a track plays through to the end
   ("finished listening"); stopping early does not count. Sortable.
+- **Keyword panel** (right side) — keywords mined from filenames + library
+  names, sorted by frequency. The count is the number of distinct **libraries**
+  a keyword appears in (tokens are de-duped within each library, so a big
+  library can't inflate a word). Click a keyword to add it to the search box as
+  an AND term (a quick filter); use "find keyword" to search the list itself.
 
 ### Your data (ratings + play counts)
 Stored separately from the index in `app/userdata.json`, keyed by each file's

@@ -35,6 +35,14 @@ raised reliably. Capturing the planet-sim app instead of ours wasted two tries.
 **Fix:** use Win32 `PrintWindow(hwnd, hdc, 2)` (`PW_RENDERFULLCONTENT`) — it
 renders the target window's own surface regardless of z-order/occlusion.
 
+## A Tree's column-width sum is its minimum width — it crowds out HSplit siblings
+Putting the table in an `HSplitContainer` next to a 250px keyword panel, the
+panel rendered mostly off the right edge. Cause: the Tree's minimum width is the
+SUM of its fixed column widths (~1393px here); with a 1500px window that left
+only ~100px for the panel, and the split overflowed. **Fix:** size the window
+(and/or trim columns) so `sum(column widths) + panel_min + handle < window`.
+Lesson: an HSplit pane can't shrink a Tree below its total column width.
+
 ## Tracklist files are mislabeled by extension
 The 2016 bundle ships `Tracklist.csv.xls` files that are actually plain CSV
 (they start with `FILENAME,...`, not the ZIP `PK` signature of real XLSX).
