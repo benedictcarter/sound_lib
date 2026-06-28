@@ -15,17 +15,18 @@ const COL_CH := 7
 const COL_SIZE := 8
 const COL_RATING := 9   # user data (app/userdata.json)
 const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
-const COL_COUNT := 11
+const COL_TAGS := 11    # user data (your own keywords; editable inline)
+const COL_COUNT := 12
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
-	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays",
+	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "My Keywords",
 ]
-# Which record field each column sorts/reads. Bundle, Rating and Plays are
-# special-cased in _sort_value (Rating/Plays live in user data, not the record).
+# Which record field each column sorts/reads. Bundle, Rating, Plays and Tags are
+# special-cased in _sort_value (the last three live in user data, not the record).
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_RATING, COL_PLAYS]
 
@@ -89,6 +90,7 @@ var _now_label: Label
 var _stream_len: float = 0.0
 var _playing_rec: Variant = null     # record currently loaded in the player
 var _playing_item: TreeItem = null   # its row, for live cell updates
+var _last_click_col: int = -1        # column of the last mouse click (gates play)
 
 var _debounce: Timer
 
@@ -176,9 +178,12 @@ func _build_ui() -> void:
 	_set_col_size(COL_SIZE, 0.0, 78)
 	_set_col_size(COL_RATING, 0.0, 95)
 	_set_col_size(COL_PLAYS, 0.0, 58)
+	_set_col_size(COL_TAGS, 0.0, 200)
 	_tree.column_title_clicked.connect(_on_title_clicked)
 	_tree.item_selected.connect(_on_row_selected)
 	_tree.item_activated.connect(_on_row_activated)
+	_tree.item_mouse_selected.connect(_on_tree_mouse_selected)
+	_tree.item_edited.connect(_on_tree_item_edited)
 
 	# --- table + keyword panel (split) ----------------------------------
 	var split := HSplitContainer.new()
@@ -264,6 +269,11 @@ func _build_ui() -> void:
 	clr.pressed.connect(_on_star_pressed.bind(0))
 	nbar.add_child(clr)
 	_refresh_star_buttons(null)
+
+	var rhint := Label.new()
+	rhint.text = "  (or click stars in the Rating column; right-click clears)"
+	rhint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	nbar.add_child(rhint)
 
 	nbar.add_child(VSeparator.new())
 	_now_label = Label.new()
@@ -515,7 +525,8 @@ func _apply() -> void:
 				String(rec.get("filename", "")) + " "
 				+ String(rec.get("library", "")) + " "
 				+ String(rec.get("supplier", "")) + " "
-				+ String(rec.get("description", ""))
+				+ String(rec.get("description", "")) + " "
+				+ _get_tags(rec)                       # your own keywords are searchable
 			).to_lower()
 			var ok := true
 			for tok in tokens:
@@ -536,6 +547,8 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _get_rating(rec)
 	if col == COL_PLAYS:
 		return _get_plays(rec)
+	if col == COL_TAGS:
+		return _get_tags(rec)
 	return rec.get(COL_FIELD[col])
 
 
@@ -602,6 +615,9 @@ func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
 	it.set_text(COL_RATING, _stars(rating))
 	var plays := _get_plays(rec)
 	it.set_text(COL_PLAYS, "" if plays == 0 else str(plays))
+	it.set_text(COL_TAGS, _get_tags(rec))
+	it.set_editable(COL_TAGS, true)            # double-click to edit
+	it.set_tooltip_text(COL_TAGS, "Double-click to edit. Separate keywords with spaces or commas.")
 
 
 # ===========================================================================
@@ -612,13 +628,46 @@ func _abs_path(rec: Dictionary) -> String:
 
 
 func _on_row_selected() -> void:
+	# Selection change only updates the rating buttons. Playback is decided in
+	# _on_tree_mouse_selected so that clicking the Rating/Tags cells doesn't play.
 	_refresh_star_buttons(_selected_rec())
-	if _autoplay.button_pressed:
-		_play_selected()
 
 
 func _on_row_activated() -> void:
+	# Double-click plays -- except on the Rating/Tags cells, which are for
+	# setting a rating / editing keywords (double-click there opens the editor).
+	if _last_click_col == COL_RATING or _last_click_col == COL_TAGS:
+		return
 	_play_selected()
+
+
+func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
+	var it := _tree.get_item_at_position(pos)
+	if it == null:
+		return
+	var rec: Variant = it.get_metadata(0)
+	var col := _tree.get_column_at_position(pos)
+	_last_click_col = col
+	if col == COL_RATING:
+		if mouse_btn == MOUSE_BUTTON_RIGHT:
+			_apply_rating(rec, it, 0)          # right-click clears
+		elif mouse_btn == MOUSE_BUTTON_LEFT:
+			var rect := _tree.get_item_area_rect(it, COL_RATING)
+			var frac := (pos.x - rect.position.x) / maxf(rect.size.x, 1.0)
+			_apply_rating(rec, it, clampi(int(ceil(frac * 5.0)), 1, 5))
+		return                                 # never play when rating
+	if col == COL_TAGS:
+		return                                 # let the inline editor handle it
+	if mouse_btn == MOUSE_BUTTON_LEFT and _autoplay.button_pressed:
+		_play_selected()
+
+
+func _on_tree_item_edited() -> void:
+	var it := _tree.get_edited()
+	if it == null or _tree.get_edited_column() != COL_TAGS:
+		return
+	var rec: Variant = it.get_metadata(0)
+	_set_tags(rec, it.get_text(COL_TAGS))
 
 
 func _selected_rec() -> Variant:
@@ -753,23 +802,39 @@ func _get_plays(rec: Dictionary) -> int:
 	return int(ud.get("plays", 0)) if typeof(ud) == TYPE_DICTIONARY else 0
 
 
-func _on_star_pressed(rating: int) -> void:
-	var rec: Variant = _selected_rec()
-	if rec == null:
+func _get_tags(rec: Dictionary) -> String:
+	var ud: Variant = _userdata.get(String(rec.get("path", "")))
+	return String(ud.get("tags", "")) if typeof(ud) == TYPE_DICTIONARY else ""
+
+
+func _set_userdata(rec: Variant, field: String, value: Variant) -> void:
+	if typeof(rec) != TYPE_DICTIONARY:
 		return
 	var key := String(rec.get("path", ""))
 	var ud: Dictionary = _userdata.get(key, {})
-	ud["rating"] = rating
+	ud[field] = value
 	_userdata[key] = ud
 	_save_userdata()
-	var it := _tree.get_selected()
-	if it != null:
+
+
+func _set_tags(rec: Variant, text: String) -> void:
+	_set_userdata(rec, "tags", text.strip_edges())
+
+
+func _apply_rating(rec: Variant, it: TreeItem, rating: int) -> void:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return
+	_set_userdata(rec, "rating", rating)
+	if it != null and is_instance_valid(it):
 		_apply_userdata_cells(it, rec)
 	_refresh_star_buttons(rec)
-	# re-sort if the table is ordered by rating
-	if _sort_col == COL_RATING:
+	if _sort_col == COL_RATING:                # keep order if sorted by rating
 		_sort_filtered()
 		_populate_tree()
+
+
+func _on_star_pressed(rating: int) -> void:
+	_apply_rating(_selected_rec(), _tree.get_selected(), rating)
 
 
 func _refresh_star_buttons(rec: Variant) -> void:

@@ -18,9 +18,13 @@ for non-obvious gotchas.
   Godot app needs no separate config.
 - ~7,000 files; all get library/supplier (tracklist, else folder-name fallback).
   ~6,250 match a tracklist (have URL); ~5,488 carry a `bext` description.
-- **User data** (star rating + play count) lives in `app/userdata.json` (keyed
+- **User data** (rating + play count + tags) lives in `app/userdata.json` (keyed
   by relative path, gitignored), NOT in index.json — survives re-indexing.
   Plays increment on the player's `finished` signal (end reached, not Stop).
+  Rating is set by clicking stars in the Rating cell (`item_mouse_selected` +
+  `get_item_area_rect`); right-click clears. Tags ("My Keywords") are an inline-
+  editable column (`item_edited`), space/comma separated, and feed the search.
+  `_last_click_col` gates double-click playback so editing Rating/Tags ≠ play.
 - **Keyword panel** computed in-app at load (`_build_keywords`): tokens from
   filename + library, de-duped per library; frequency = #libraries containing
   the token. Click appends the token to the search box (AND quick-filter).

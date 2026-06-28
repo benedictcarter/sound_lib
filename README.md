@@ -64,8 +64,13 @@ or:
 - **Sort** — click any column header (click again to reverse).
 - **Audition** — select a row (autoplay) or double-click; transport bar has
   play/pause, stop, seek and volume. "Open folder" reveals the file on disk.
-- **Rate** — select a row, then click the stars in the "Rate selected" bar
-  (1-5, or Clear). Shown in the **Rating** column; sortable.
+- **Rate** — click the stars directly in the **Rating** column (left-click a
+  star to set 1-5, right-click to clear). The "Rate selected" bar at the bottom
+  also works on the selected row. Sortable. (Clicking the Rating cell does not
+  play the file.)
+- **My Keywords** — your own tags per file. Double-click the cell to edit;
+  separate keywords with spaces or commas. Stored with your other data and
+  included in the search box, so you can find files by your own tags.
 - **Plays** — auto-increments each time a track plays through to the end
   ("finished listening"); stopping early does not count. Sortable.
 - **Keyword panel** (right side) — keywords mined from filenames + library
@@ -74,7 +79,7 @@ or:
   library can't inflate a word). Click a keyword to add it to the search box as
   an AND term (a quick filter); use "find keyword" to search the list itself.
 
-### Your data (ratings + play counts)
+### Your data (ratings + play counts + keywords)
 Stored separately from the index in `app/userdata.json`, keyed by each file's
 relative path — so it **survives re-indexing** and library moves. It's
 gitignored by default (personal data); remove the `/app/userdata.json` line from
