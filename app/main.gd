@@ -533,9 +533,9 @@ func _build_analyser(root: VBoxContainer) -> void:
 	sug.pressed.connect(_apply_suggested)
 	bar.add_child(sug)
 
-	_sil_slider = _add_slider(bar, "Silence", -90, -30, 1, DEF_SILENCE_DB)
+	_sil_slider = _add_slider(bar, "Silence", -90, 0, 1, DEF_SILENCE_DB)
 	_sil_lbl = bar.get_child(bar.get_child_count() - 1) as Label
-	_gap_slider = _add_slider(bar, "Min gap", 0.2, 5.0, 0.1, DEF_MIN_GAP_S)
+	_gap_slider = _add_slider(bar, "Min gap", 0.0, 5.0, 0.1, DEF_MIN_GAP_S)
 	_gap_lbl = bar.get_child(bar.get_child_count() - 1) as Label
 	_snd_slider = _add_slider(bar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
 	_snd_lbl = bar.get_child(bar.get_child_count() - 1) as Label
@@ -1335,9 +1335,9 @@ func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
 			"min_sound_s": DEF_MIN_SOUND_S}
 	c.erase("continuous")
 	if col == COL_CHOP_DB:
-		c["silence_db"] = clampf(_parse_float(it.get_text(col), c["silence_db"]), -90.0, -30.0)
+		c["silence_db"] = clampf(_parse_float(it.get_text(col), c["silence_db"]), -90.0, 0.0)
 	else:
-		c["min_gap_s"] = clampf(_parse_float(it.get_text(col), c["min_gap_s"]), 0.2, 10.0)
+		c["min_gap_s"] = clampf(_parse_float(it.get_text(col), c["min_gap_s"]), 0.0, 10.0)
 	_chopping[key] = c
 	# Live recount when this is the analysed file (we have its envelope cached).
 	if rec == _an_rec and not _an_levels.is_empty():
