@@ -87,10 +87,10 @@ for non-obvious gotchas.
   `{"continuous": true}` (blank chop columns, nothing to chop). Incremental by
   size+params. Reads all audio so a full run is slow. NEVER auto-chops.
 - App: clicking a row auto-runs the analyser (`_an_debounce` -> `_auto_analyse`)
-  and shows the picture. WaveGraph paints, per envelope bar, the part ABOVE the
-  chop threshold GREEN (sound) and BELOW it GREY (treated as silence) — so the
-  chop dB level reads as the green/grey boundary; dead-space (cut) stays BLACK,
-  per-piece chop boundaries BLUE, threshold dB by the orange line. The graph is
+  and shows the picture. WaveGraph paints the KEPT sounds (detected segments)
+  GREEN and the bits being CHOPPED AWAY (gaps) GREY (still drawn, so you see what's
+  removed) — colour by segment membership, not by threshold; per-piece chop
+  boundaries BLUE, threshold dB by the orange line. The graph is
   also the seek surface: LEFT-click = seek (`seek_requested` -> `_on_graph_seek`)
   AND set the chop dB (`threshold_picked` -> `_on_graph_threshold_picked`);
   LEFT-drag = scrub only; RIGHT-click/drag = set chop dB only. Play dot rides the

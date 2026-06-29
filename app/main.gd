@@ -126,7 +126,7 @@ class WaveGraph extends Control:
 				threshold_picked.emit(_db_at_y(event.position.y))
 				accept_event()
 
-	# Dead space (what the chopper cuts) is black; kept sounds are green.
+	# Kept sounds are green; the bits being chopped away are grey (still drawn).
 	func _draw() -> void:
 		var w := size.x
 		var h := size.y
@@ -137,22 +137,16 @@ class WaveGraph extends Control:
 				"Select a WAV to preview its sounds (green) and dead space (black)",
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.5, 0.5, 0.55))
 			return
-		# Envelope inside kept segments (gaps stay black). Each bar is split at the
-		# chop threshold: the part ABOVE the chop level is green (real sound), the
-		# part BELOW it is grey (what's treated as silence) — so the chop dB level
-		# is visible across the whole graph as the green/grey boundary.
+		# Kept sounds (the detected segments) are GREEN; the bits being chopped
+		# away (gaps / dead space) are GREY but still drawn, so you can see exactly
+		# what's removed. With no detection yet the whole file reads as kept.
 		var has_segs := segments.size() > 0
 		var green := Color(0.30, 0.85, 0.45)
-		var grey := Color(0.42, 0.42, 0.48)
-		var th_y := _yfor(threshold_db)
+		var grey := Color(0.46, 0.46, 0.52)
 		for x in int(w):
 			var fi := mini(int(float(x) / w * n), n - 1)
-			if has_segs and not _frame_in_segment(fi):
-				continue                                   # dead space -> leave black
-			var lvl_y := _yfor(levels[fi])
-			draw_line(Vector2(x, h), Vector2(x, maxf(lvl_y, th_y)), grey, 1.0)   # below chop level
-			if lvl_y < th_y:
-				draw_line(Vector2(x, th_y), Vector2(x, lvl_y), green, 1.0)       # above it
+			var kept := not has_segs or _frame_in_segment(fi)
+			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), green if kept else grey, 1.0)
 		# chop boundaries: start + end of every kept piece, in blue
 		if has_segs:
 			var bcol := Color(0.30, 0.62, 1.0, 0.9)
