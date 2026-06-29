@@ -239,12 +239,6 @@ var _chop_btn: Button
 var _chop_spec_path: String = ""
 var _chop_result_path: String = ""
 
-# loudness-measure job (loudness.py over files with no measurement yet)
-var _lm_thread: Thread = null
-var _lm_busy: bool = false
-var _lm_btn: Button
-var _lm_poll: Timer
-var _lm_progress_path: String = ""
 var _norm_target_edit: LineEdit       # the 0-10 Level for the "set on selection" action
 
 # ----- nodes ---------------------------------------------------------------
@@ -326,7 +320,6 @@ func _ready() -> void:
 	_sg_progress_path = ProjectSettings.globalize_path("user://chop_progress.json")
 	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
-	_lm_progress_path = ProjectSettings.globalize_path("user://loudness_progress.json")
 	_load_userdata()
 	_load_analysis()
 	_load_chopping()
@@ -515,19 +508,11 @@ func _build_ui() -> void:
 	seekhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pbar.add_child(seekhint)
 
-	# --- loudness / normalize row ---------------------------------------
+	# --- level / normalize row ------------------------------------------
 	var lbar := HBoxContainer.new()
 	lbar.add_theme_constant_override("separation", 6)
 	root.add_child(lbar)
 
-	_lm_btn = Button.new()
-	_lm_btn.text = "Measure loudness"
-	_lm_btn.tooltip_text = "Measure each file's loudness (for files not measured yet)" \
-		+ " so Normalize can hit a target level. Reads their audio; fills the Loudness column live."
-	_lm_btn.pressed.connect(_measure_missing_loudness)
-	lbar.add_child(_lm_btn)
-
-	lbar.add_child(VSeparator.new())
 	var nlab := Label.new()
 	nlab.text = "Set Level"
 	lbar.add_child(nlab)
@@ -612,12 +597,6 @@ func _build_ui() -> void:
 	_sg_poll.wait_time = 1.0
 	_sg_poll.timeout.connect(_sg_tick)
 	add_child(_sg_poll)
-
-	# poll the loudness-measure job's progress file while it runs
-	_lm_poll = Timer.new()
-	_lm_poll.wait_time = 1.0
-	_lm_poll.timeout.connect(_lm_tick)
-	add_child(_lm_poll)
 
 	# coalesce chopping.json writes so a slider/graph drag saves once, not per tick
 	_chop_save_debounce = Timer.new()
@@ -710,10 +689,10 @@ func _build_analyser(root: VBoxContainer) -> void:
 	bar.add_child(_chop_btn)
 
 	_sg_btn = Button.new()
-	_sg_btn.text = "Suggest missing chops"
-	_sg_btn.tooltip_text = "Auto-suggest chop settings for every file that has none " \
-		+ "yet (fills the Chop columns). Reads all their audio, so it can be slow; " \
-		+ "the columns fill in as it runs."
+	_sg_btn.text = "Analyse audio (chops + loudness)"
+	_sg_btn.tooltip_text = "For every file not analysed yet, read its audio ONCE and " \
+		+ "compute both the chop suggestion AND the loudness (fills the Chop, orig dB " \
+		+ "and final dB columns). Slow on a fresh library; columns fill in as it runs."
 	_sg_btn.pressed.connect(_suggest_missing_chops)
 	bar.add_child(_sg_btn)
 
@@ -1057,7 +1036,7 @@ func _apply_loudness_cell(it: TreeItem, rec: Dictionary) -> void:
 	var r := _loudness_rms(rec)
 	it.set_text(COL_LOUDNESS, "" if is_nan(r) else "%.1f dB" % r)
 	it.set_tooltip_text(COL_LOUDNESS,
-		"Measured original loudness (dBFS) of the file. Run 'Measure loudness' to fill.")
+		"Measured original loudness (dBFS) of the file. Run 'Analyse audio' to fill.")
 	_apply_final_cell(it, rec)
 
 
@@ -1745,7 +1724,7 @@ func _on_level_edited(rec: Variant, it: TreeItem) -> void:
 	var r := _apply_target_to_gain(rec, it)
 	_save_userdata()                            # persist level + recomputed gain
 	if r == -1:
-		_status_label.text = "Level set. Run 'Measure loudness' to apply it (no measurement yet)."
+		_status_label.text = "Level set. Run 'Analyse audio' to apply it (no measurement yet)."
 	else:
 		var res := _target_gain(rec)
 		if res.size() == 2 and res[1]:
@@ -2146,6 +2125,8 @@ func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
 
 
 # ----- bulk "suggest missing chops" (suggest_chops.py in a thread) ---------
+# One combined pass (chops + loudness) over files missing EITHER, reading each
+# file's audio once. Runs analyse_audio.py in a thread with live progress.
 func _suggest_missing_chops() -> void:
 	if _sg_busy:
 		return
@@ -2153,18 +2134,19 @@ func _suggest_missing_chops() -> void:
 	for rec in _all:
 		if String(rec.get("ext", "")).to_lower() != "wav":
 			continue
-		if not _chopping.has(String(rec.get("path", ""))):
+		var p := String(rec.get("path", ""))
+		if not _chopping.has(p) or not _loudness.has(p):
 			missing += 1
 	if missing == 0:
-		_an_status.text = "Every file already has chop config — nothing to suggest."
+		_an_status.text = "Every file is already analysed (chops + loudness)."
 		return
 	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/suggest_chops.py").simplify_path()
+		"../indexer/analyse_audio.py").simplify_path()
 	if FileAccess.file_exists(_sg_progress_path):
 		DirAccess.remove_absolute(_sg_progress_path)
 	_sg_busy = true
 	_sg_btn.disabled = true
-	_an_status.text = "Suggesting chops for %d file%s… (reads their audio; may take a while)" % [
+	_an_status.text = "Analysing %d file%s (chops + loudness)… (reads their audio once)" % [
 		missing, "" if missing == 1 else "s"]
 	_sg_thread = Thread.new()
 	_sg_thread.start(_sg_run.bind(script, _sg_progress_path))
@@ -2180,13 +2162,14 @@ func _sg_run(script: String, progress: String) -> void:
 	call_deferred("_sg_finished")
 
 
-# Polled while the job runs: refresh the chop cells from disk and update status.
+# Polled while the job runs: refresh chop + loudness cells from disk, update status.
 func _sg_tick() -> void:
 	_reload_chop_cells()
+	_reload_loudness_cells()
 	if FileAccess.file_exists(_sg_progress_path):
 		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_progress_path))
 		if typeof(d) == TYPE_DICTIONARY:
-			_an_status.text = "Suggesting chops… %d / %d analysed" % [
+			_an_status.text = "Analysing audio… %d / %d" % [
 				int(d.get("analysed", 0)), int(d.get("total", 0))]
 
 
@@ -2198,13 +2181,16 @@ func _sg_finished() -> void:
 	_sg_busy = false
 	_sg_btn.disabled = false
 	_reload_chop_cells()
+	_reload_loudness_cells()
+	var applied := _recompute_targets()        # newly-measured rows with a Level -> Gain dB
 	var analysed := 0
 	if FileAccess.file_exists(_sg_progress_path):
 		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_progress_path))
 		if typeof(d) == TYPE_DICTIONARY:
 			analysed = int(d.get("analysed", 0))
-	_an_status.text = "Chop suggestions complete: %d file%s analysed." % [
-		analysed, "" if analysed == 1 else "s"]
+	var extra := "  (%d level'd rows updated)" % applied if applied > 0 else ""
+	_an_status.text = "Audio analysis complete: %d file%s (chops + loudness).%s" % [
+		analysed, "" if analysed == 1 else "s", extra]
 
 
 # Re-read chopping.json from disk and repaint the chop cells of visible rows
@@ -2220,63 +2206,6 @@ func _reload_chop_cells() -> void:
 		if typeof(rec) == TYPE_DICTIONARY:
 			_apply_chop_cells(it, rec)
 		it = it.get_next()
-
-
-# ----- measure loudness (loudness.py over un-measured files, in a thread) ----
-func _measure_missing_loudness() -> void:
-	if _lm_busy:
-		return
-	var missing := 0
-	for rec in _all:
-		if String(rec.get("ext", "")).to_lower() != "wav":
-			continue
-		if not _loudness.has(String(rec.get("path", ""))):
-			missing += 1
-	if missing == 0:
-		_status_label.text = "Every file already has a loudness measurement."
-		return
-	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/loudness.py").simplify_path()
-	if FileAccess.file_exists(_lm_progress_path):
-		DirAccess.remove_absolute(_lm_progress_path)
-	_lm_busy = true
-	_lm_btn.disabled = true
-	_status_label.text = "Measuring loudness for %d file%s… (reads their audio)" % [
-		missing, "" if missing == 1 else "s"]
-	_lm_thread = Thread.new()
-	_lm_thread.start(_lm_run.bind(script, _lm_progress_path))
-	_lm_poll.start()
-
-
-func _lm_run(script: String, progress: String) -> void:
-	var output: Array = []
-	var args := [script, "--only-missing", "--progress", progress]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
-	call_deferred("_lm_finished")
-
-
-func _lm_tick() -> void:
-	_reload_loudness_cells()
-	if FileAccess.file_exists(_lm_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_lm_progress_path))
-		if typeof(d) == TYPE_DICTIONARY:
-			_status_label.text = "Measuring loudness… %d / %d" % [
-				int(d.get("analysed", 0)), int(d.get("total", 0))]
-
-
-func _lm_finished() -> void:
-	_lm_poll.stop()
-	if _lm_thread:
-		_lm_thread.wait_to_finish()
-		_lm_thread = null
-	_lm_busy = false
-	_lm_btn.disabled = false
-	_reload_loudness_cells()
-	var applied := _recompute_targets()        # newly-measured files with a target -> Gain dB
-	var extra := "  (%d targeted rows updated)" % applied if applied > 0 else ""
-	_status_label.text = "Loudness measurement complete.%s" % extra
 
 
 # After (re)measuring, recompute Gain dB for every visible row that has a Target.
@@ -2349,7 +2278,7 @@ func _normalize_selection() -> void:
 	if capped > 0:
 		msg += "  %d capped to avoid clipping." % capped
 	if unmeasured > 0:
-		msg += "  %d not measured yet (run Measure loudness, then it applies)." % unmeasured
+		msg += "  %d not measured yet (run Analyse audio, then it applies)." % unmeasured
 	_status_label.text = msg
 
 
@@ -2576,8 +2505,6 @@ func _exit_tree() -> void:
 		_sg_thread.wait_to_finish()
 	if _chop_thread and _chop_thread.is_started():
 		_chop_thread.wait_to_finish()
-	if _lm_thread and _lm_thread.is_started():
-		_lm_thread.wait_to_finish()
 
 
 func _an_finished() -> void:

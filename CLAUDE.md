@@ -38,10 +38,13 @@ for non-obvious gotchas.
   migrates a legacy linear `vol_mult` entry to dB on read. (NOTE: there is no
   digital headroom above 0 dBFS — a positive Gain dB boosts past the file's level
   and clips; that's physics, not a bug. Balance with <=0 values.)
-  **Loudness** column (`COL_LOUDNESS`, read-only) = measured integrated RMS in
-  dBFS from `loudness.json` (`indexer/loudness.py`, also stores true `peak_db`).
-  "Measure loudness" button runs `loudness.py --only-missing` in a thread with a
-  polled progress file (`_lm_*`, mirrors the chop-suggest job).
+  **orig dB** column (`COL_LOUDNESS`, read-only) = measured integrated RMS in
+  dBFS from `loudness.json`. **final dB** (`COL_FINAL_DB`, read-only) = orig dB +
+  Gain dB = the resulting playback loudness (`_final_db`/`_apply_final_cell`,
+  refreshed wherever Gain dB changes). Loudness is filled by the COMBINED
+  "Analyse audio (chops + loudness)" button (`indexer/analyse_audio.py`, one read
+  per file does chops + loudness; `_sg_*` job reloads both, polled progress).
+  Column order: Tags | tgt vol/Level | orig dB | Gain dB | final dB.
   **Level** column (`COL_LEVEL`, userdata `level`, editable) = a 0-10 PERCEPTUAL
   loudness dial: 10 = `LEVEL_TOP_DBFS` (-10 dBFS), 0 = silence, halving the number
   = half perceived loudness = -10 dB (`_level_to_dbfs` = top + 10·log2(level/10),
@@ -145,7 +148,8 @@ for non-obvious gotchas.
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)
 - Tune detection on sample files: `py indexer/explore_gaps.py`
 - Batch sound counts: `py indexer/analyze.py`
-- Batch chop suggestions: `py indexer/suggest_chops.py`  (-> chopping.json)
-- Batch loudness measure: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
+- Combined analysis (what the app runs): `py indexer/analyse_audio.py`  (chops + loudness, one read/file)
+- Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
+- Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`

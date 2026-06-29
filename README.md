@@ -93,11 +93,12 @@ counts them and previews where it would chop.
 - To fill the column for the whole library at once:
   `py indexer/analyze.py` (reads all audio; incremental on re-runs).
 
-### Chop suggestions ("Chop dB" / "Chop gap" columns)
-- Click **Suggest missing chops** (in the analyser bar) to fill the columns for
-  every file that has no chop config yet — it runs the analyser over those files
-  in the background and the columns fill in live as it goes. (Equivalent CLI:
-  `py indexer/suggest_chops.py`.) Both write `chopping.json` beside the audio.
+### Analysing audio (chop suggestions + loudness)
+- Click **Analyse audio (chops + loudness)** (in the analyser bar). For every
+  file not analysed yet it reads the audio **once** and computes **both** the chop
+  suggestion *and* the loudness, filling the Chop, **orig dB** and **final dB**
+  columns live. (Equivalent CLI: `py indexer/analyse_audio.py`.) Writes
+  `chopping.json` + `loudness.json` beside the audio.
 - Files it judges **continuous** get no settings (blank columns — nothing to
   chop).
 - **Chop dB** / **Chop gap** / **Min snd** are **editable**: double-click to
@@ -137,8 +138,9 @@ root) store the counts and chop params.
   and may clip. Double-click to edit (or drag-select a range and type). It's
   added on top of the global **Vol** slider, which stays a plain 0–1 control.
   Stored with your user data.
-- **Loudness** (read-only) — each file's measured integrated loudness in dBFS.
-  Click **Measure loudness** to fill it in (reads the audio; one-off, incremental).
+- **orig dB** (read-only) — each file's measured original loudness (dBFS). Fill it
+  with **Analyse audio** (above). **final dB** (read-only) = orig dB + Gain dB =
+  the resulting playback loudness your Level is steering.
 
 ### Level-balancing on a 0–10 scale (Level → Gain dB)
 The **Level** column is a simple **0–10 perceptual loudness dial** — no negative
@@ -156,7 +158,7 @@ each file, sets its **Gain dB** to hit the Level, and **caps so the peak never
 clips**. Your amp/speakers set the overall room volume; the Levels set the balance.
 
 - Edit a Level cell (or drag-select a range and type one, or use **Set Level …
-  on selection**) and Gain dB updates. Re-run **Measure loudness** and every
+  on selection**) and Gain dB updates. Re-run **Analyse audio** and every
   level'd row recomputes. If a Level is hotter than a file can play cleanly, its
   Gain dB is capped to that file's clean max and the status says so.
 - **Keyword panel** (right side) — keywords mined from filenames + library
