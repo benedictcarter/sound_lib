@@ -1531,6 +1531,15 @@ func _on_param_changed() -> void:
 	_graph.segments = segs
 	_graph.queue_redraw()
 	var name := String(_an_rec.get("filename", "")) if typeof(_an_rec) == TYPE_DICTIONARY else "?"
+	# If nothing survived, say WHY: usually Min sound discarding short pieces
+	# (e.g. tight gun bursts) rather than the threshold finding nothing.
+	if segs.is_empty() and _snd_slider.value > 0.0:
+		var raw := _gd_find_segments(_an_levels, _sil_slider.value,
+			_gap_slider.value, 0.0, _an_frame_s)
+		if raw.size() > 0:
+			_an_status.text = "%s  →  0 pieces  (%d below Min sound %.2fs — lower Min sound)" % [
+				name, raw.size(), _snd_slider.value]
+			return
 	_an_status.text = "%s  →  %d piece%s  (%d gaps)" % [
 		name, segs.size(), "" if segs.size() == 1 else "s", maxi(0, segs.size() - 1)]
 
