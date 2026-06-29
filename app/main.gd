@@ -15,22 +15,26 @@ const COL_CH := 7
 const COL_SIZE := 8
 const COL_RATING := 9   # user data (app/userdata.json)
 const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
-const COL_SOUNDS := 11  # analysis: detected sound count (app/analysis.json)
-const COL_TAGS := 12    # user data (your own keywords; editable inline)
-const COL_COUNT := 13
+const COL_SOUNDS := 11  # analysis: detected sound count (analysis.json)
+const COL_CHOP_DB := 12 # suggested/edited chop silence threshold (chopping.json)
+const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
+const COL_CHOP_N := 14  # resulting chop pieces at those settings (chopping.json)
+const COL_TAGS := 15    # user data (your own keywords; editable inline)
+const COL_COUNT := 16
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
-	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds", "My Keywords",
+	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
+	"Chop dB", "Chop gap", "Chop pieces", "Tags",
 ]
-# Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds and
-# Tags are special-cased in _sort_value (they don't live in the record).
+# Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
+# Chop dB/gap/pieces and Tags are special-cased in _sort_value (not in record).
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
-	COL_RATING, COL_PLAYS, COL_SOUNDS]
+	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_N]
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -53,7 +57,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 200]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 80, 200]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -66,6 +70,8 @@ const DEF_MIN_SOUND_S := 0.3
 ## Draws the loudness (dBFS) envelope vs time, the silence threshold, the
 ## detected "dead zones" (gaps) and a playback cursor.
 class WaveGraph extends Control:
+	signal threshold_picked(db: float)   # emitted when the user clicks/drags in it
+
 	var levels := PackedFloat32Array()
 	var segments: Array = []          # [[start_frame, end_frame], ...]
 	var threshold_db: float = DEF_SILENCE_DB
@@ -76,44 +82,70 @@ class WaveGraph extends Control:
 	func _yfor(db: float) -> float:
 		return clampf((TOP_DB - db) / (TOP_DB - BOT_DB), 0.0, 1.0) * size.y
 
+	func _db_at_y(y: float) -> float:
+		var t := clampf(y / maxf(size.y, 1.0), 0.0, 1.0)
+		return TOP_DB - t * (TOP_DB - BOT_DB)
+
+	# Click or drag anywhere in the graph to set the silence threshold to that
+	# vertical level (in dB). The handler in main applies + recomputes live.
+	func _gui_input(event: InputEvent) -> void:
+		var pick := false
+		if event is InputEventMouseButton:
+			pick = event.button_index == MOUSE_BUTTON_LEFT and event.pressed
+		elif event is InputEventMouseMotion:
+			pick = (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
+		if pick:
+			threshold_picked.emit(_db_at_y(event.position.y))
+			accept_event()
+
+	# Dead space (what the chopper cuts) is black; kept sounds are green.
 	func _draw() -> void:
 		var w := size.x
 		var h := size.y
-		draw_rect(Rect2(Vector2.ZERO, size), Color(0.09, 0.10, 0.13))
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0.03, 0.03, 0.04))   # = dead space
 		var n := levels.size()
 		if n == 0:
 			draw_string(get_theme_default_font(), Vector2(10, h * 0.5 + 5),
-				"Select a WAV and press Analyse to preview its sounds / gaps",
+				"Select a WAV to preview its sounds (green) and dead space (black)",
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.5, 0.5, 0.55))
 			return
-		# dead zones = gaps between detected segments (what gets cut)
-		var gap_col := Color(0.85, 0.25, 0.25, 0.20)
-		var prev_end := 0
-		for s in segments:
-			var ge: int = int(s[0])
-			if ge > prev_end:
-				var gx := float(prev_end) / n * w
-				draw_rect(Rect2(gx, 0, float(ge) / n * w - gx, h), gap_col)
-			prev_end = int(s[1])
-		if n > prev_end:
-			var gx := float(prev_end) / n * w
-			draw_rect(Rect2(gx, 0, w - gx, h), gap_col)
-		# loudness envelope (one bar per pixel column)
-		var col := Color(0.40, 0.85, 0.78)
+		# Draw the loudness envelope only inside kept segments; gaps stay black.
+		# With no segments yet (pre-detection) the whole file reads as one sound.
+		var has_segs := segments.size() > 0
+		var col := Color(0.30, 0.85, 0.45)
 		for x in int(w):
 			var fi := mini(int(float(x) / w * n), n - 1)
+			if has_segs and not _frame_in_segment(fi):
+				continue                                   # dead space -> leave black
 			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), col, 1.0)
-		# silence threshold
+		# chop boundaries: start + end of every kept piece, in blue
+		if has_segs:
+			var bcol := Color(0.30, 0.62, 1.0, 0.9)
+			for s in segments:
+				var xs := float(int(s[0])) / n * w
+				var xe := float(int(s[1])) / n * w
+				draw_line(Vector2(xs, 0), Vector2(xs, h), bcol, 1.0)
+				draw_line(Vector2(xe, 0), Vector2(xe, h), bcol, 1.0)
+		# silence threshold + its dB value
 		var ty := _yfor(threshold_db)
-		draw_line(Vector2(0, ty), Vector2(w, ty), Color(1.0, 0.6, 0.1), 1.5)
-		# chop boundaries (start of each detected sound)
-		for s in segments:
-			var xs := float(s[0]) / n * w
-			draw_line(Vector2(xs, 0), Vector2(xs, h), Color(0.35, 1.0, 0.55, 0.7), 1.0)
+		var ocol := Color(1.0, 0.6, 0.1)
+		draw_line(Vector2(0, ty), Vector2(w, ty), ocol, 1.5)
+		var font := get_theme_default_font()
+		var lbl := "%d dB" % int(round(threshold_db))
+		var lw := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		var lyt := clampf(ty - 4.0, 11.0, h - 2.0)
+		draw_string(font, Vector2(w - lw - 6.0, lyt), lbl,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ocol)
 		# playback cursor
 		if playhead >= 0.0:
 			draw_line(Vector2(playhead * w, 0), Vector2(playhead * w, h),
 				Color(1, 1, 1, 0.85), 1.0)
+
+	func _frame_in_segment(fi: int) -> bool:
+		for s in segments:
+			if fi >= int(s[0]) and fi < int(s[1]):
+				return true
+		return false
 
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
@@ -132,6 +164,11 @@ var _star_btns: Array = []    # 5 rating buttons in the player bar
 var _analysis: Dictionary = {}
 var _an_path: String = ""
 
+# suggested/edited chop params -- { rel_path : {"silence_db","min_gap_s",
+# "min_sound_s","chops"} } or {"continuous": true}. Lives with the audio.
+var _chopping: Dictionary = {}
+var _chop_path: String = ""
+
 # analyser panel / live preview state
 var _graph: WaveGraph
 var _an_levels := PackedFloat32Array()    # cached envelope for the loaded file
@@ -149,6 +186,14 @@ var _an_status: Label
 var _an_thread: Thread = null
 var _an_busy: bool = false
 var _an_out_path: String = ""
+
+# bulk "suggest missing chops" job (runs suggest_chops.py over files lacking a
+# chopping.json entry, in a thread, with a polled progress file)
+var _sg_thread: Thread = null
+var _sg_busy: bool = false
+var _sg_btn: Button
+var _sg_poll: Timer
+var _sg_progress_path: String = ""
 
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
@@ -191,6 +236,8 @@ var _header_h: float = 0.0           # measured header (title row) height, cache
 var _suppress_title_click: bool = false
 
 var _debounce: Timer
+var _an_debounce: Timer        # auto-analyse the selected row after a short pause
+var _chop_save_debounce: Timer # coalesce chopping.json writes during a live drag
 
 
 func _ready() -> void:
@@ -201,9 +248,12 @@ func _ready() -> void:
 	var data_dir := _data_dir()
 	_ud_path = data_dir.path_join("userdata.json")
 	_an_path = data_dir.path_join("analysis.json")
+	_chop_path = data_dir.path_join("chopping.json")
 	_an_out_path = ProjectSettings.globalize_path("user://envelope.json")
+	_sg_progress_path = ProjectSettings.globalize_path("user://chop_progress.json")
 	_load_userdata()
 	_load_analysis()
+	_load_chopping()
 	_build_ui()
 	_load_index()
 
@@ -406,6 +456,27 @@ func _build_ui() -> void:
 	_debounce.timeout.connect(_apply)
 	add_child(_debounce)
 
+	# debounce auto-analysis so scrolling through rows doesn't spawn a Python
+	# read per row -- only the row you settle on gets analysed.
+	_an_debounce = Timer.new()
+	_an_debounce.wait_time = 0.25
+	_an_debounce.one_shot = true
+	_an_debounce.timeout.connect(_auto_analyse)
+	add_child(_an_debounce)
+
+	# poll the bulk chop-suggest job's progress file while it runs
+	_sg_poll = Timer.new()
+	_sg_poll.wait_time = 1.0
+	_sg_poll.timeout.connect(_sg_tick)
+	add_child(_sg_poll)
+
+	# coalesce chopping.json writes so a slider/graph drag saves once, not per tick
+	_chop_save_debounce = Timer.new()
+	_chop_save_debounce.wait_time = 0.4
+	_chop_save_debounce.one_shot = true
+	_chop_save_debounce.timeout.connect(_save_chopping)
+	add_child(_chop_save_debounce)
+
 
 func _add_filter(parent: HBoxContainer, label: String) -> OptionButton:
 	var l := Label.new()
@@ -475,6 +546,14 @@ func _build_analyser(root: VBoxContainer) -> void:
 	save.pressed.connect(_save_current_count)
 	bar.add_child(save)
 
+	_sg_btn = Button.new()
+	_sg_btn.text = "Suggest missing chops"
+	_sg_btn.tooltip_text = "Auto-suggest chop settings for every file that has none " \
+		+ "yet (fills the Chop columns). Reads all their audio, so it can be slow; " \
+		+ "the columns fill in as it runs."
+	_sg_btn.pressed.connect(_suggest_missing_chops)
+	bar.add_child(_sg_btn)
+
 	_an_status = Label.new()
 	_an_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_an_status.text = "Analyser idle."
@@ -483,6 +562,8 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_graph = WaveGraph.new()
 	_graph.custom_minimum_size = Vector2(0, 120)
 	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_graph.tooltip_text = "Click or drag to set the silence threshold (dB)."
+	_graph.threshold_picked.connect(_on_graph_threshold_picked)
 	root.add_child(_graph)
 	_update_param_labels()
 
@@ -501,7 +582,7 @@ func _add_slider(bar: HBoxContainer, name: String, lo: float, hi: float,
 	s.value = val
 	s.custom_minimum_size = Vector2(120, 0)
 	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	s.value_changed.connect(func(_v): _on_param_changed())
+	s.value_changed.connect(func(_v): _on_user_param_changed())
 	bar.add_child(s)
 	var vl := Label.new()
 	vl.custom_minimum_size = Vector2(58, 0)
@@ -715,6 +796,12 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _get_plays(rec)
 	if col == COL_SOUNDS:
 		return _get_sounds(rec)
+	if col == COL_CHOP_DB:
+		return _chop_db_val(rec)
+	if col == COL_CHOP_GAP:
+		return _chop_gap_val(rec)
+	if col == COL_CHOP_N:
+		return _chop_n_val(rec)
 	if col == COL_TAGS:
 		return _get_tags(rec)
 	return rec.get(COL_FIELD[col])
@@ -777,7 +864,9 @@ func _populate_tree() -> void:
 		it.set_text(COL_CH, "" if rec.get("channels") == null else str(int(rec.get("channels"))))
 		it.set_text(COL_SIZE, _fmt_size(rec.get("size")))
 		_apply_userdata_cells(it, rec)
-		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS, COL_SOUNDS]:
+		_apply_chop_cells(it, rec)
+		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
+				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_N]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
@@ -803,15 +892,29 @@ func _abs_path(rec: Dictionary) -> String:
 
 
 func _on_row_selected() -> void:
-	# Selection change only updates the rating buttons. Playback is decided in
-	# _on_tree_mouse_selected so that clicking the Rating/Tags cells doesn't play.
+	# Selection change updates the rating buttons and (debounced) auto-analyses
+	# the row so its sound/dead-space picture shows without pressing Analyse.
+	# Playback is decided in _on_tree_mouse_selected so clicking the Rating/Tags/
+	# Chop cells doesn't play.
 	_refresh_star_buttons(_selected_rec())
+	_an_debounce.start()
+
+
+# Auto-analyse the selected row (fired by _an_debounce) unless it's already the
+# file in the analyser, isn't a WAV, or an analysis is already running.
+func _auto_analyse() -> void:
+	var rec: Variant = _selected_rec()
+	if rec == null or rec == _an_rec or _an_busy:
+		return
+	if String(rec.get("ext", "")).to_lower() != "wav":
+		return
+	_analyse_selected()
 
 
 func _on_row_activated() -> void:
-	# Double-click plays -- except on the Rating/Tags cells, which are for
-	# setting a rating / editing keywords (double-click there opens the editor).
-	if _last_click_col == COL_RATING or _last_click_col == COL_TAGS:
+	# Double-click plays -- except on the editable Rating/Tags/Chop cells, where
+	# a double-click opens the editor / sets a rating instead of playing.
+	if _last_click_col in [COL_RATING, COL_TAGS, COL_CHOP_DB, COL_CHOP_GAP]:
 		return
 	_play_selected()
 
@@ -829,7 +932,7 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		elif mouse_btn == MOUSE_BUTTON_LEFT:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
-	if col == COL_TAGS:
+	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP:
 		return                                 # let the inline editor handle it
 	if mouse_btn == MOUSE_BUTTON_LEFT and _autoplay.button_pressed:
 		_play_selected()
@@ -837,10 +940,14 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 
 func _on_tree_item_edited() -> void:
 	var it := _tree.get_edited()
-	if it == null or _tree.get_edited_column() != COL_TAGS:
+	if it == null:
 		return
+	var col := _tree.get_edited_column()
 	var rec: Variant = it.get_metadata(0)
-	_set_tags(rec, it.get_text(COL_TAGS))
+	if col == COL_TAGS:
+		_set_tags(rec, it.get_text(COL_TAGS))
+	elif col == COL_CHOP_DB or col == COL_CHOP_GAP:
+		_on_chop_edited(rec, it, col)
 
 
 # ===========================================================================
@@ -1150,6 +1257,177 @@ func _get_sounds(rec: Dictionary) -> int:
 	return int(a.get("sounds", 0)) if typeof(a) == TYPE_DICTIONARY else 0
 
 
+# ----- chop params (chopping.json, beside the audio) -----------------------
+func _load_chopping() -> void:
+	if not FileAccess.file_exists(_chop_path):
+		return
+	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_chop_path))
+	if typeof(data) == TYPE_DICTIONARY:
+		_chopping = data
+
+
+func _save_chopping() -> void:
+	var f := FileAccess.open(_chop_path, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(_chopping))
+
+
+# The chop entry for a record, or null. A choppable file has "silence_db";
+# a continuous one is {"continuous": true} and shows blank chop columns.
+func _get_chop(rec: Variant) -> Variant:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return null
+	return _chopping.get(String(rec.get("path", "")))
+
+
+func _chop_db_val(rec: Dictionary) -> float:
+	var c: Variant = _get_chop(rec)
+	return float(c["silence_db"]) if typeof(c) == TYPE_DICTIONARY and c.has("silence_db") else -999.0
+
+
+func _chop_gap_val(rec: Dictionary) -> float:
+	var c: Variant = _get_chop(rec)
+	return float(c.get("min_gap_s", -1.0)) if typeof(c) == TYPE_DICTIONARY and c.has("silence_db") else -1.0
+
+
+func _chop_n_val(rec: Dictionary) -> int:
+	var c: Variant = _get_chop(rec)
+	return int(c.get("chops", -1)) if typeof(c) == TYPE_DICTIONARY and c.has("chops") else -1
+
+
+func _apply_chop_cells(it: TreeItem, rec: Dictionary) -> void:
+	var c: Variant = _get_chop(rec)
+	var db_txt := ""
+	var gap_txt := ""
+	var n_txt := ""
+	if typeof(c) == TYPE_DICTIONARY:
+		if c.has("silence_db"):
+			db_txt = "%d" % int(round(float(c["silence_db"])))
+			gap_txt = "%.1f" % float(c.get("min_gap_s", DEF_MIN_GAP_S))
+		if c.has("chops"):
+			n_txt = str(int(c["chops"]))      # continuous files report 1 piece
+	it.set_text(COL_CHOP_DB, db_txt)
+	it.set_text(COL_CHOP_GAP, gap_txt)
+	it.set_text(COL_CHOP_N, n_txt)
+	it.set_editable(COL_CHOP_DB, true)
+	it.set_editable(COL_CHOP_GAP, true)
+	it.set_tooltip_text(COL_CHOP_DB,
+		"Chop silence threshold (dBFS). Blank = continuous, no chop. Double-click to edit.")
+	it.set_tooltip_text(COL_CHOP_GAP, "Chop min-gap (s). Double-click to edit.")
+	it.set_tooltip_text(COL_CHOP_N, "Pieces this file chops into at its settings (run/edit to fill).")
+
+
+func _parse_float(txt: String, fallback: float) -> float:
+	txt = txt.strip_edges()
+	return txt.to_float() if txt.is_valid_float() else fallback
+
+
+# Inline edit of a chop column: refine the stored param (creating an entry if the
+# file was continuous), and -- if it's the file shown in the analyser -- recount
+# live from the cached envelope.
+func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return
+	var key := String(rec.get("path", ""))
+	var c: Dictionary = _chopping.get(key, {})
+	if not c.has("silence_db"):              # seed from defaults if newly created
+		c = {"silence_db": DEF_SILENCE_DB, "min_gap_s": DEF_MIN_GAP_S,
+			"min_sound_s": DEF_MIN_SOUND_S}
+	c.erase("continuous")
+	if col == COL_CHOP_DB:
+		c["silence_db"] = clampf(_parse_float(it.get_text(col), c["silence_db"]), -90.0, -30.0)
+	else:
+		c["min_gap_s"] = clampf(_parse_float(it.get_text(col), c["min_gap_s"]), 0.2, 10.0)
+	_chopping[key] = c
+	# Live recount when this is the analysed file (we have its envelope cached).
+	if rec == _an_rec and not _an_levels.is_empty():
+		_sil_slider.set_value_no_signal(c["silence_db"])
+		_gap_slider.set_value_no_signal(c["min_gap_s"])
+		_update_param_labels()
+		_on_param_changed()
+		c["chops"] = _graph.segments.size()
+		_chopping[key] = c
+	_save_chopping()
+	_apply_chop_cells(it, rec)
+
+
+# ----- bulk "suggest missing chops" (suggest_chops.py in a thread) ---------
+func _suggest_missing_chops() -> void:
+	if _sg_busy:
+		return
+	var missing := 0
+	for rec in _all:
+		if String(rec.get("ext", "")).to_lower() != "wav":
+			continue
+		if not _chopping.has(String(rec.get("path", ""))):
+			missing += 1
+	if missing == 0:
+		_an_status.text = "Every file already has chop config — nothing to suggest."
+		return
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/suggest_chops.py").simplify_path()
+	if FileAccess.file_exists(_sg_progress_path):
+		DirAccess.remove_absolute(_sg_progress_path)
+	_sg_busy = true
+	_sg_btn.disabled = true
+	_an_status.text = "Suggesting chops for %d file%s… (reads their audio; may take a while)" % [
+		missing, "" if missing == 1 else "s"]
+	_sg_thread = Thread.new()
+	_sg_thread.start(_sg_run.bind(script, _sg_progress_path))
+	_sg_poll.start()
+
+
+func _sg_run(script: String, progress: String) -> void:
+	var output: Array = []
+	var args := [script, "--only-missing", "--progress", progress]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:                       # py launcher not found; try python
+		OS.execute("python", args, output, true)
+	call_deferred("_sg_finished")
+
+
+# Polled while the job runs: refresh the chop cells from disk and update status.
+func _sg_tick() -> void:
+	_reload_chop_cells()
+	if FileAccess.file_exists(_sg_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_progress_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			_an_status.text = "Suggesting chops… %d / %d analysed" % [
+				int(d.get("analysed", 0)), int(d.get("total", 0))]
+
+
+func _sg_finished() -> void:
+	_sg_poll.stop()
+	if _sg_thread:
+		_sg_thread.wait_to_finish()
+		_sg_thread = null
+	_sg_busy = false
+	_sg_btn.disabled = false
+	_reload_chop_cells()
+	var analysed := 0
+	if FileAccess.file_exists(_sg_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_progress_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			analysed = int(d.get("analysed", 0))
+	_an_status.text = "Chop suggestions complete: %d file%s analysed." % [
+		analysed, "" if analysed == 1 else "s"]
+
+
+# Re-read chopping.json from disk and repaint the chop cells of visible rows
+# (cheap; doesn't disturb selection/scroll like a full repopulate would).
+func _reload_chop_cells() -> void:
+	_load_chopping()
+	var root := _tree.get_root()
+	if root == null:
+		return
+	var it := root.get_first_child()
+	while it != null:
+		var rec: Variant = it.get_metadata(0)
+		if typeof(rec) == TYPE_DICTIONARY:
+			_apply_chop_cells(it, rec)
+		it = it.get_next()
+
+
 func _update_param_labels() -> void:
 	if _sil_lbl: _sil_lbl.text = "%d dB" % int(_sil_slider.value)
 	if _gap_lbl: _gap_lbl.text = "%.1f s" % _gap_slider.value
@@ -1190,8 +1468,12 @@ func _an_run(script: String, audio: String, out: String) -> void:
 
 
 func _exit_tree() -> void:
+	if _chop_save_debounce and _chop_save_debounce.time_left > 0.0:
+		_save_chopping()                 # flush a pending coalesced write
 	if _an_thread and _an_thread.is_started():
 		_an_thread.wait_to_finish()
+	if _sg_thread and _sg_thread.is_started():
+		_sg_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
@@ -1211,7 +1493,23 @@ func _an_finished() -> void:
 	_an_duration = float(data["duration"])
 	_an_suggested = float(data["suggested_db"])
 	_graph.levels = _an_levels
-	_apply_suggested()        # also recomputes + redraws
+	_apply_saved_or_suggested()        # also recomputes + redraws
+
+
+# Drive the sliders from this file's saved chop params if it has any, else from
+# the per-file suggested threshold. Either way recomputes + redraws.
+func _apply_saved_or_suggested() -> void:
+	if _an_levels.is_empty():
+		return
+	var c: Variant = _get_chop(_an_rec)
+	if typeof(c) == TYPE_DICTIONARY and c.has("silence_db"):
+		_sil_slider.set_value_no_signal(float(c["silence_db"]))
+		_gap_slider.set_value_no_signal(float(c.get("min_gap_s", DEF_MIN_GAP_S)))
+		_snd_slider.set_value_no_signal(float(c.get("min_sound_s", DEF_MIN_SOUND_S)))
+		_update_param_labels()
+		_on_param_changed()
+	else:
+		_apply_suggested()
 
 
 func _apply_suggested() -> void:
@@ -1233,8 +1531,46 @@ func _on_param_changed() -> void:
 	_graph.segments = segs
 	_graph.queue_redraw()
 	var name := String(_an_rec.get("filename", "")) if typeof(_an_rec) == TYPE_DICTIONARY else "?"
-	_an_status.text = "%s  →  %d sound%s  (%d gaps)" % [
+	_an_status.text = "%s  →  %d piece%s  (%d gaps)" % [
 		name, segs.size(), "" if segs.size() == 1 else "s", maxi(0, segs.size() - 1)]
+
+
+# A USER param change (slider drag or click on the graph): recompute live AND
+# persist the result to chopping.json for the analysed file, so the Chop dB /
+# gap / pieces columns track what you set. (Auto-load uses _on_param_changed,
+# which never persists — browsing files doesn't write config.)
+func _on_user_param_changed() -> void:
+	_on_param_changed()
+	_persist_analysed_chop()
+
+
+func _persist_analysed_chop() -> void:
+	if typeof(_an_rec) != TYPE_DICTIONARY or _an_levels.is_empty():
+		return
+	var key := String(_an_rec.get("path", ""))
+	var entry := {
+		"silence_db": _sil_slider.value,
+		"min_gap_s": _gap_slider.value,
+		"min_sound_s": _snd_slider.value,
+		"chops": _graph.segments.size(),
+	}
+	var old: Variant = _chopping.get(key)
+	if typeof(old) == TYPE_DICTIONARY and old.has("size"):
+		entry["size"] = old["size"]
+	_chopping[key] = entry
+	_chop_save_debounce.start()          # disk write coalesced (see _build_ui)
+	# refresh the analysed file's row (usually the selected one)
+	var it := _tree.get_selected()
+	if it and it.get_metadata(0) == _an_rec:
+		_apply_chop_cells(it, _an_rec)
+
+
+# Click/drag on the visualiser sets the silence threshold to that dB level.
+func _on_graph_threshold_picked(db: float) -> void:
+	if _an_levels.is_empty():
+		return
+	_sil_slider.set_value_no_signal(clampf(db, _sil_slider.min_value, _sil_slider.max_value))
+	_on_user_param_changed()
 
 
 # GDScript port of indexer/gaps.find_segments — runs live as sliders move.

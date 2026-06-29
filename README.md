@@ -76,19 +76,38 @@ or:
 Long files often contain several sounds separated by silence. The analyser
 counts them and previews where it would chop.
 
-- Select a WAV and click **Analyse selected**. The graph shows the loudness
-  (dBFS) over time, the silence threshold (orange line) and the detected
-  **dead zones** (red) that separate the sounds. A white cursor tracks playback.
+- **Just click a row** — it auto-analyses and draws the picture (no button
+  press). The graph paints the kept **sounds in green**, the **dead space that
+  would be chopped out in black**, the **chop start/stop of each piece in blue**,
+  the silence threshold (orange line, labelled with its **dB** value) and a white
+  playback cursor. (The **Analyse selected** button still works.)
+- **Click or drag on the graph** to set the silence threshold to that level —
+  the chop pieces recompute live and the file's chop columns update.
 - Tune live: **Silence** (what counts as silence, default −60 dBFS), **Min gap**
   (how long a silence must be, default 1.5 s) and **Min sound** (ignore blips).
   **Suggest** picks a threshold from the file's own loudness histogram.
+  Changing Silence/gap on the analysed file saves to its chop columns.
 - **Save count** writes the result to the **Sounds** column.
 - To fill the column for the whole library at once:
   `py indexer/analyze.py` (reads all audio; incremental on re-runs).
 
+### Chop suggestions ("Chop dB" / "Chop gap" columns)
+- Click **Suggest missing chops** (in the analyser bar) to fill the columns for
+  every file that has no chop config yet — it runs the analyser over those files
+  in the background and the columns fill in live as it goes. (Equivalent CLI:
+  `py indexer/suggest_chops.py`.) Both write `chopping.json` beside the audio.
+- Files it judges **continuous** get no settings (blank columns — nothing to
+  chop).
+- **Chop dB** / **Chop gap** are **editable**: double-click to refine the
+  silence threshold or min-gap for a file. **Chop pieces** (read-only) shows how
+  many pieces the file chops into at those settings (continuous = 1; blank until
+  analysed). Editing the file currently in the analyser recounts live. Chopping
+  itself is a separate, manual step.
+
 Detection lives in `indexer/gaps.py` and is mirrored in the app (GDScript) so
-the sliders respond instantly. `app/analysis.json` stores the counts.
-- **My Keywords** — your own tags per file. Double-click the cell to edit;
+the sliders respond instantly. `analysis.json` / `chopping.json` (in the library
+root) store the counts and chop params.
+- **Tags** — your own keywords per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
   included in the search box, so you can find files by your own tags.
 - **Plays** — auto-increments each time a track plays through to the end

@@ -21,14 +21,14 @@ for non-obvious gotchas.
 - **User data** (rating + play count + tags) lives in `<library_root>/userdata.json`
   (e.g. S:\code\sound_lib_data\userdata.json), keyed by relative path — OUTSIDE
   the repo, with the audio. Path resolved in `_data_dir()` from library.cfg.
-  `analysis.json` sits beside it. NEVER `rm` these from repo cleanup (a past bug
-  deleted a user's tags when they were in app/). Not in index.json -> survives
-  re-indexing.
+  `analysis.json` AND `chopping.json` sit beside it. NEVER `rm` these from repo
+  cleanup (a past bug deleted a user's tags when they were in app/). Not in
+  index.json -> survives re-indexing.
   Plays increment on the player's `finished` signal (end reached, not Stop).
   Rating is set by clicking stars in the Rating cell (`item_mouse_selected` +
-  `get_item_area_rect`); right-click clears. Tags ("My Keywords") are an inline-
-  editable column (`item_edited`), space/comma separated, and feed the search.
-  `_last_click_col` gates double-click playback so editing Rating/Tags ≠ play.
+  `get_item_area_rect`); right-click clears. Tags (the "Tags" column) are an
+  inline-editable column (`item_edited`), space/comma separated, feed the search.
+  `_last_click_col` gates double-click playback so editing Rating/Tags/Chop ≠ play.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
   shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
   dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.
@@ -49,15 +49,35 @@ for non-obvious gotchas.
   mirrors gaps.py) as the sliders move. WaveGraph (inner class) draws it.
 - `indexer/analyze.py` — batch counts -> `app/analysis.json` (Sounds column).
   Incremental; reads all audio (~217 GB) so a full run takes a while.
+- `indexer/suggest_chops.py` — batch "optimal chop" suggester -> `chopping.json`
+  in the LIBRARY ROOT (beside the audio, NOT app/ — that's where the app reads
+  it). Per file: histogram-suggested silence_db + chop count. chops<=1 ->
+  `{"continuous": true}` (blank chop columns, nothing to chop). Incremental by
+  size+params. Reads all audio so a full run is slow. NEVER auto-chops.
+- App: clicking a row auto-runs the analyser (`_an_debounce` -> `_auto_analyse`)
+  and shows the picture; WaveGraph paints kept sounds GREEN, dead-space (cut)
+  BLACK, the per-piece chop start/stop boundaries BLUE, and the threshold dB
+  value by the orange line. CLICK/DRAG the graph to set the silence threshold
+  (`WaveGraph.threshold_picked` -> `_on_graph_threshold_picked`; `_db_at_y`).
+  Three chop columns: "Chop dB"/"Chop gap" editable, "Chop pieces" read-only
+  (= stored `chops`; continuous files show 1). `_apply_chop_cells`/
+  `_on_chop_edited`. A USER threshold/gap change (slider or graph) persists to
+  `chopping.json` for the analysed file via `_on_user_param_changed` ->
+  `_persist_analysed_chop` (disk write debounced by `_chop_save_debounce`);
+  auto-load uses `_on_param_changed` and does NOT persist (browsing ≠ writing).
+  "Suggest missing chops" button runs `suggest_chops.py --only-missing` in a
+  Thread (`_suggest_missing_chops`), polling `user://chop_progress.json`
+  (`_sg_poll`/`_sg_tick`) and repainting cells as the script checkpoints.
 - KEY finding: an ABSOLUTE -60 dBFS floor generalises far better than a
   peak-relative threshold (a loud transient lifts a relative threshold into the
   ambient bed and explodes false-gap counts). See LESSONS_LEARNT.md.
-- Next (phase 2): `indexer/chop.py` to split at gaps into `name_chop_NNN.wav`
-  and delete the original.
+- Next (phase 2): `indexer/chop.py` to split at gaps into `name_chop_NNN.wav`;
+  chopped files must INHERIT the parent's tags. Manual only — never auto-chop.
 
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)
 - Tune detection on sample files: `py indexer/explore_gaps.py`
 - Batch sound counts: `py indexer/analyze.py`
+- Batch chop suggestions: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`

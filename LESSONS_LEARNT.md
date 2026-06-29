@@ -93,6 +93,18 @@ blank-looking graph as "broken". Also: never load a long file's samples whole
 `soundfile.blocks`, and cap envelope resolution (~8000 frames) so the JSON the
 app draws stays small.
 
+## Generated user-side JSON must be written to the LIBRARY ROOT, not app/
+The app reads `userdata.json`, `analysis.json` and `chopping.json` from
+`_data_dir()` = the library root (beside the audio), so they survive moving the
+library and repo cleanup. But `analyze.py` still writes `app/analysis.json`
+(a leftover from before the data move) — a path the app no longer reads. When
+adding `suggest_chops.py` I made it resolve `chopping.json` from
+`index.json["library_root"]` so the writer and the Godot reader agree.
+**Lesson:** any batch script that produces data the app consumes must target the
+library root, mirroring `_data_dir()` — don't copy analyze.py's `REPO/app/...`
+output path (it's the odd one out and effectively dead). Cost: would have been a
+silently-empty Chop column with the file written to the wrong place.
+
 ## WAV indexing must not read the audio payload
 Naively reading whole files would mean touching 217 GB. Instead walk RIFF chunks
 and `seek()` past the `data` chunk (`csize` bytes, word-aligned to even). Only
