@@ -281,6 +281,7 @@ var _chop_save_debounce: Timer # coalesce chopping.json writes during a live dra
 
 
 func _ready() -> void:
+	_size_window_to_screen()
 	_player = $Player
 	_player.finished.connect(_on_playback_finished)
 	# Your data lives WITH the audio library (outside the code repo), so it
@@ -298,6 +299,27 @@ func _ready() -> void:
 	_load_chopping()
 	_build_ui()
 	_load_index()
+
+
+# Open at half the screen AREA (≈71% on each axis), keeping the screen's aspect
+# ratio, centered — but never narrower than the table needs, so every column is
+# visible. On a 4K (3840×2160) display that's ~2715×1527.
+func _size_window_to_screen() -> void:
+	var win := get_window()
+	var scr := win.current_screen
+	var ss := DisplayServer.screen_get_size(scr)
+	if ss.x <= 0 or ss.y <= 0:
+		return
+	var scale := 0.70710678                       # 1/sqrt(2) → half the total area
+	var size := Vector2i(int(round(ss.x * scale)), int(round(ss.y * scale)))
+	var min_w := 300                              # keyword panel + handle + scrollbar
+	for w in COL_DEFAULT_W:
+		min_w += w                                # all column widths
+	size.x = clampi(size.x, mini(min_w, ss.x), ss.x)
+	size.y = mini(size.y, ss.y)
+	win.mode = Window.MODE_WINDOWED
+	win.size = size
+	win.position = DisplayServer.screen_get_position(scr) + (ss - size) / 2
 
 
 ## Directory for user data (ratings / play counts / tags) and analysis results:

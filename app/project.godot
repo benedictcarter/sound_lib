@@ -13,8 +13,8 @@ config/icon="res://icon.svg"
 
 [display]
 
-window/size/viewport_width=1900
-window/size/viewport_height=820
+window/size/viewport_width=2560
+window/size/viewport_height=1440
 window/size/initial_position_type=1
 
 [gui]
