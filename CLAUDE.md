@@ -114,7 +114,10 @@ for non-obvious gotchas.
   /`_cell_edit_live`/`_commit_cell_edit`/`_cancel_cell_edit` using `event.unicode`,
   `_cell_edit_col` tracks the target column) — Enter/click/`focus_exited` commits +
   deselects, Esc cancels. All keys handled in `_on_tree_gui_input`. (Chop columns
-  stay single-cell double-click edits, not in SEL_EDIT_COLS.)
+  stay single-cell double-click edits, not in SEL_EDIT_COLS.) Editable cells
+  (`EDITABLE_COLS`: Rating, Chop dB/gap/snd, Tags, Vol×) are tinted slightly
+  lighter (`EDIT_CELL_BG`, `set_custom_bg_color` in `_populate_tree`) so they
+  stand out from read-only metadata.
   `multi_selected` drives per-selection refresh (item_selected doesn't fire in
   SELECT_MULTI); autoplay is suppressed while Shift/Ctrl is held.
 

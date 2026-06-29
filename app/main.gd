@@ -41,6 +41,11 @@ const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
 # Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
 # across a selection). Driven by the SELECTED column, not hard-wired to Tags.
 const SEL_EDIT_COLS := [COL_TAGS, COL_VOL_MULT]
+# Columns you can edit (inline or by clicking) — tinted a touch lighter so the
+# editable cells stand out from the read-only metadata.
+const EDITABLE_COLS := [COL_RATING, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND,
+	COL_TAGS, COL_VOL_MULT]
+const EDIT_CELL_BG := Color(1, 1, 1, 0.08)   # subtle lighter overlay on editable cells
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -934,6 +939,8 @@ func _populate_tree() -> void:
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
 				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N, COL_VOL_MULT]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
+		for c in EDITABLE_COLS:                 # tint editable cells a touch lighter
+			it.set_custom_bg_color(c, EDIT_CELL_BG)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
 
