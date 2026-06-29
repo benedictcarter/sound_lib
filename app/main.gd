@@ -249,6 +249,10 @@ var _drag_sel: bool = false
 var _drag_anchor: TreeItem = null
 var _drag_last: TreeItem = null
 var _drag_col: int = 0
+var _drag_additive: bool = false     # Shift/Ctrl: keep the selection from before this drag
+var _drag_toggle: bool = false       # Ctrl: flip cells in the region instead of adding
+var _drag_base: Array = []           # [[item, col], ...] selection before this drag
+var _drag_base_col: Dictionary = {}  # item -> selected column, for fast toggle lookup
 
 var _debounce: Timer
 var _an_debounce: Timer        # auto-analyse the selected row after a short pause
@@ -1040,21 +1044,34 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 				_resize_start_w = _col_w[c]
 				_tree.accept_event()
 			elif event.position.y > _header_height():
-				# remember the press as a potential drag-select anchor (a plain
-				# click still works; range select only starts once you move)
 				var it := _tree.get_item_at_position(event.position)
 				if it != null:
 					_drag_sel = true
 					_drag_anchor = it
 					_drag_last = it
 					_drag_col = maxi(0, _tree.get_column_at_position(event.position))
+					_drag_additive = event.shift_pressed or event.ctrl_pressed
+					_drag_toggle = event.ctrl_pressed
+					if _drag_additive:
+						# Take over: snapshot the prior selection (Shift adds the
+						# region, Ctrl toggles it) and apply the click now so a
+						# modifier-click without a drag still works. accept_event
+						# runs before Tree's own handler (gui_input signal first),
+						# so native modifier behaviour is suppressed cleanly.
+						_snapshot_selection()
+						_apply_drag_range(it, it)
+						_tree.accept_event()
 		else:                                  # released
 			if _resize_col >= 0:
 				_resize_col = -1
 				_tree.accept_event()
 			_drag_sel = false
+			_drag_additive = false
+			_drag_toggle = false
 			_drag_anchor = null
 			_drag_last = null
+			_drag_base = []
+			_drag_base_col = {}
 	elif event is InputEventMouseMotion:
 		if _resize_col >= 0:
 			var w := maxi(COL_MIN_W, _resize_start_w + int(event.position.x - _resize_start_x))
@@ -1066,7 +1083,7 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 			var it := _tree.get_item_at_position(event.position)
 			if it != null and it != _drag_last and _drag_anchor != null:
 				_drag_last = it
-				_select_row_range(_drag_anchor, it, _drag_col)
+				_apply_drag_range(_drag_anchor, it)
 				_tree.accept_event()
 		else:
 			# show the horizontal-resize cursor when hovering a divider
@@ -1075,24 +1092,59 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 				else Control.CURSOR_ARROW)
 
 
-# Select every row between two items (inclusive) at the given column, for an
-# Excel-style click-drag range. Programmatic select() is silent (no signal).
-func _select_row_range(a: TreeItem, b: TreeItem, col: int) -> void:
-	_tree.deselect_all()
+# Snapshot the current cell selection so a modifier-drag can preserve it.
+func _snapshot_selection() -> void:
+	_drag_base = []
+	_drag_base_col = {}
+	var it := _tree.get_next_selected(null)
+	while it != null:
+		var col := 0
+		for cc in COL_COUNT:
+			if it.is_selected(cc):
+				col = cc
+				break
+		_drag_base.append([it, col])
+		_drag_base_col[it] = col
+		it = _tree.get_next_selected(it)
+
+
+# Items between two rows (inclusive), in display order, either drag direction.
+func _rows_between(a: TreeItem, b: TreeItem) -> Array:
+	var out: Array = []
 	var root := _tree.get_root()
 	if root == null:
-		return
+		return out
 	var inside := false
 	var it := root.get_first_child()
 	while it != null:
 		if it == a or it == b:
-			it.select(col)
+			out.append(it)
 			if a == b or inside:
 				break                          # second endpoint reached -> done
 			inside = true
 		elif inside:
-			it.select(col)
+			out.append(it)
 		it = it.get_next()
+	return out
+
+
+# Apply the current drag's region (a..b at _drag_col) to the selection:
+#   plain  -> replace selection with the region
+#   Shift  -> prior selection + the region (additive)
+#   Ctrl   -> prior selection with the region's cells toggled (deselect if they
+#             were already selected, else select)
+# Programmatic select()/deselect() are silent, so no signal storm during a drag.
+func _apply_drag_range(a: TreeItem, b: TreeItem) -> void:
+	_tree.deselect_all()
+	if _drag_additive:
+		for pair in _drag_base:
+			if is_instance_valid(pair[0]):
+				pair[0].select(pair[1])
+	for it in _rows_between(a, b):
+		if _drag_toggle and _drag_base_col.has(it):
+			it.deselect(_drag_base_col[it])    # was selected -> toggle off
+		else:
+			it.select(_drag_col)
 
 
 ## Which star (1-5) the x position falls on, measured against the actual drawn

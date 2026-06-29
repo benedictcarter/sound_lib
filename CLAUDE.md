@@ -85,11 +85,17 @@ for non-obvious gotchas.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
-- Tags column is spreadsheet-like: Tree is `SELECT_MULTI`. Selection by Shift/
-  Ctrl-click OR **click-drag** — drag-select is hand-rolled in `_on_tree_gui_input`
-  (`_drag_*` state + `_select_row_range`, which toggles `inside` at the two
-  endpoints so it works either drag direction) since SELECT_MULTI has no native
-  drag. Ctrl+C copies the selected row's tags to the OS clipboard
+- Tags column is spreadsheet-like: Tree is `SELECT_MULTI`. Selection by click,
+  or **click-drag** a range — all hand-rolled in `_on_tree_gui_input` (`_drag_*`
+  state) because SELECT_MULTI has no native drag. Modes: plain drag = replace;
+  **Shift = additive** (keep prior selection + add region); **Ctrl = toggle**
+  (flip the region's cells; Ctrl on an already-selected cell deselects). For a
+  modifier press we snapshot the prior selection (`_snapshot_selection`) and
+  `accept_event` (the `gui_input` signal runs before Tree's own handler, so
+  native modifier behaviour is suppressed) then `_apply_drag_range` rebuilds:
+  deselect_all -> restore base -> add/toggle `_rows_between(a,b)`. Plain drag
+  doesn't accept on press, so a normal click still single-selects/plays.
+  Ctrl+C copies the selected row's tags to the OS clipboard
   (`_copy_selected_tags`); Ctrl+V pastes onto every selected row's Tags cell
   (`_paste_tags_to_selection`) — handled in `_on_tree_gui_input`. `multi_selected`
   drives per-selection refresh (item_selected doesn't fire in SELECT_MULTI);
