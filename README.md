@@ -63,7 +63,9 @@ or:
 - **Filter** — Bundle / Supplier / Library / Type dropdowns.
 - **Sort** — click any column header (click again to reverse).
 - **Audition** — select a row (autoplay) or double-click; transport bar has
-  play/pause, stop, seek and volume. "Open folder" reveals the file on disk.
+  play/pause, stop, seek and volume. **Space** toggles play/pause from anywhere
+  (except while typing in a text field). Tick **Loop** to replay the current
+  track seamlessly. "Open folder" reveals the file on disk.
 - **Rate** — click the stars directly in the **Rating** column (left-click a
   star to set 1-5, right-click to clear). Hovering the cell shows a gold preview
   of the rating that a click will apply. The "Rate selected" bar at the bottom

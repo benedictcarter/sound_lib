@@ -235,6 +235,8 @@ var _playing_rec: Variant = null     # record currently loaded in the player
 var _playing_item: TreeItem = null   # its row, for live cell updates
 var _global_vol: float = 0.9         # the 0..1 global Vol slider value
 var _play_vol_mult: float = 1.0      # current track's per-track Vol× multiplier
+var _loop_chk: CheckButton
+var _loop_on: bool = false           # "Loop" toggle: replay the current track
 var _last_click_col: int = -1        # column of the last mouse click (gates play)
 var _hover_item: TreeItem = null     # row whose Rating cell is showing a preview
 var _hover_star: int = -1            # previewed star count under the cursor
@@ -407,6 +409,13 @@ func _build_ui() -> void:
 	stop.text = "Stop"
 	stop.pressed.connect(_on_stop_pressed)
 	pbar.add_child(stop)
+
+	_loop_chk = CheckButton.new()
+	_loop_chk.text = "Loop"
+	_loop_chk.tooltip_text = "Replay this track: loop the current track seamlessly."
+	_loop_chk.focus_mode = Control.FOCUS_NONE      # don't eat the Space shortcut
+	_loop_chk.toggled.connect(_on_loop_toggled)
+	pbar.add_child(_loop_chk)
 
 	_time_label = Label.new()
 	_time_label.custom_minimum_size = Vector2(110, 0)
@@ -1264,6 +1273,7 @@ func _play_selected() -> void:
 	if stream == null:
 		_now_label.text = "Could not load WAV: %s" % abs
 		return
+	_set_stream_loop(stream)                   # honour the Loop toggle
 	_player.stream = stream
 	_play_vol_mult = _get_vol_mult(rec)        # per-track gain on top of the slider
 	_apply_volume()
@@ -1308,6 +1318,25 @@ func _apply_volume() -> void:
 	_player.volume_db = -80.0 if lin <= 0.001 else linear_to_db(lin)
 
 
+# Set a WAV stream to loop (or not) per the Loop toggle. A looping stream plays
+# seamlessly and never emits `finished` (so it doesn't count as a play).
+func _set_stream_loop(stream: AudioStreamWAV) -> void:
+	if stream == null:
+		return
+	if _loop_on:
+		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		stream.loop_begin = 0
+		stream.loop_end = int(round(stream.get_length() * stream.mix_rate))
+	else:
+		stream.loop_mode = AudioStreamWAV.LOOP_DISABLED
+
+
+func _on_loop_toggled(on: bool) -> void:
+	_loop_on = on
+	if _player.stream is AudioStreamWAV:
+		_set_stream_loop(_player.stream)       # apply to the current track live
+
+
 func _on_seek_released(_changed: bool) -> void:
 	if _player.stream != null and _stream_len > 0.0:
 		_player.seek(_seek.value * _stream_len)
@@ -1323,6 +1352,18 @@ func _on_reveal() -> void:
 		return
 	var folder := _library_root.path_join(String(rec.get("path", "")).get_base_dir())
 	OS.shell_open(folder)
+
+
+# Space toggles play/pause globally -- except while typing in a text field (the
+# search box, an inline cell editor) or during a type-over tag edit, where Space
+# must reach the text.
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE:
+		var foc := get_viewport().gui_get_focus_owner()
+		if foc is LineEdit or foc is TextEdit or _tag_edit_active:
+			return
+		_on_play_pressed()
+		get_viewport().set_input_as_handled()
 
 
 func _process(_delta: float) -> void:
@@ -1820,6 +1861,7 @@ func _play_chops() -> void:
 	if preview == null:
 		_an_status.text = "Play chops needs 8/16-bit PCM (format %d)." % stream.format
 		return
+	_set_stream_loop(preview)                  # honour the Loop toggle
 	_player.stream = preview
 	_play_vol_mult = _get_vol_mult(_an_rec)    # match the source track's Vol×
 	_apply_volume()

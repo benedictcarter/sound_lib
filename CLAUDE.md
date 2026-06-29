@@ -33,6 +33,11 @@ for non-obvious gotchas.
   is a per-track playback gain: final player gain = global Vol slider × this mult
   (`_apply_volume` from `_global_vol` × `_play_vol_mult`; set in `_play_selected`/
   `_play_chops`, live-applied on edit). It does NOT move the 0..1 global slider.
+  **Loop** toggle (`_loop_chk`/`_loop_on`) sets the WAV's native
+  `loop_mode = LOOP_FORWARD` (`_set_stream_loop`; seamless, and a looping stream
+  emits no `finished` so loops don't count as plays). **Space** toggles play/pause
+  globally via `_input` -> `_on_play_pressed`, suppressed when a `LineEdit`/
+  `TextEdit` is focused or a tag type-over is active.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
   shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
   dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.
