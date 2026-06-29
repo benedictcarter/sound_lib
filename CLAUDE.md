@@ -18,7 +18,7 @@ for non-obvious gotchas.
   Godot app needs no separate config.
 - ~7,000 files; all get library/supplier (tracklist, else folder-name fallback).
   ~6,250 match a tracklist (have URL); ~5,488 carry a `bext` description.
-- **User data** (rating + play count + tags) lives in `<library_root>/userdata.json`
+- **User data** (rating + play count + tags + `vol_mult`) lives in `<library_root>/userdata.json`
   (e.g. S:\code\sound_lib_data\userdata.json), keyed by relative path — OUTSIDE
   the repo, with the audio. Path resolved in `_data_dir()` from library.cfg.
   `analysis.json` AND `chopping.json` sit beside it. NEVER `rm` these from repo
@@ -29,6 +29,10 @@ for non-obvious gotchas.
   `get_item_area_rect`); right-click clears. Tags (the "Tags" column) are an
   inline-editable column (`item_edited`), space/comma separated, feed the search.
   `_last_click_col` gates double-click playback so editing Rating/Tags/Chop ≠ play.
+  **Vol×** column (`COL_VOL_MULT`, userdata `vol_mult`, editable, validation >0)
+  is a per-track playback gain: final player gain = global Vol slider × this mult
+  (`_apply_volume` from `_global_vol` × `_play_vol_mult`; set in `_play_selected`/
+  `_play_chops`, live-applied on edit). It does NOT move the 0..1 global slider.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
   shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
   dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.

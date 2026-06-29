@@ -21,21 +21,23 @@ const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
 const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
 const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
 const COL_TAGS := 16    # user data (your own keywords; editable inline)
-const COL_COUNT := 17
+const COL_VOL_MULT := 17 # user data: per-track playback gain multiplier (>0)
+const COL_COUNT := 18
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
-	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags",
+	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags", "Vol×",
 ]
 # Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
-# Chop dB/gap/snd/pieces and Tags are special-cased in _sort_value (not in record).
+# Chop dB/gap/snd/pieces, Tags and Vol× are special-cased in _sort_value (not in record).
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
-	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N]
+	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
+	COL_VOL_MULT]
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -58,7 +60,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200, 56]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -231,6 +233,8 @@ var _now_label: Label
 var _stream_len: float = 0.0
 var _playing_rec: Variant = null     # record currently loaded in the player
 var _playing_item: TreeItem = null   # its row, for live cell updates
+var _global_vol: float = 0.9         # the 0..1 global Vol slider value
+var _play_vol_mult: float = 1.0      # current track's per-track Vol× multiplier
 var _last_click_col: int = -1        # column of the last mouse click (gates play)
 var _hover_item: TreeItem = null     # row whose Rating cell is showing a preview
 var _hover_star: int = -1            # previewed star count under the cursor
@@ -851,6 +855,8 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _chop_n_val(rec)
 	if col == COL_TAGS:
 		return _get_tags(rec)
+	if col == COL_VOL_MULT:
+		return _get_vol_mult(rec)
 	return rec.get(COL_FIELD[col])
 
 
@@ -913,7 +919,7 @@ func _populate_tree() -> void:
 		_apply_userdata_cells(it, rec)
 		_apply_chop_cells(it, rec)
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
-				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N]:
+				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N, COL_VOL_MULT]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
@@ -929,6 +935,11 @@ func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
 	it.set_text(COL_TAGS, _get_tags(rec))
 	it.set_editable(COL_TAGS, true)            # double-click to edit
 	it.set_tooltip_text(COL_TAGS, "Double-click to edit. Separate keywords with spaces or commas.")
+	it.set_text(COL_VOL_MULT, _fmt_mult(_get_vol_mult(rec)))
+	it.set_editable(COL_VOL_MULT, true)
+	it.set_tooltip_text(COL_VOL_MULT,
+		"Per-track playback gain (>0). Multiplies this track's volume on top of the " \
+		+ "global Vol slider. e.g. 0.1 = quieter, 10 = louder. Blank = 1 (unchanged).")
 
 
 # ===========================================================================
@@ -967,7 +978,7 @@ func _auto_analyse() -> void:
 func _on_row_activated() -> void:
 	# Double-click plays -- except on the editable Rating/Tags/Chop cells, where
 	# a double-click opens the editor / sets a rating instead of playing.
-	if _last_click_col in [COL_RATING, COL_TAGS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND]:
+	if _last_click_col in [COL_RATING, COL_TAGS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_VOL_MULT]:
 		return
 	_play_selected()
 
@@ -985,7 +996,8 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		elif mouse_btn == MOUSE_BUTTON_LEFT:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
-	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND:
+	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND \
+			or col == COL_VOL_MULT:
 		return                                 # let the inline editor handle it
 	# Don't autoplay while Shift/Ctrl-extending a selection range.
 	var ranging := Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_CTRL)
@@ -1003,6 +1015,8 @@ func _on_tree_item_edited() -> void:
 		_set_tags(rec, it.get_text(COL_TAGS))
 	elif col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND:
 		_on_chop_edited(rec, it, col)
+	elif col == COL_VOL_MULT:
+		_on_vol_mult_edited(rec, it)
 
 
 # ===========================================================================
@@ -1251,6 +1265,8 @@ func _play_selected() -> void:
 		_now_label.text = "Could not load WAV: %s" % abs
 		return
 	_player.stream = stream
+	_play_vol_mult = _get_vol_mult(rec)        # per-track gain on top of the slider
+	_apply_volume()
 	_player.play()
 	_stream_len = stream.get_length()
 	_playing_rec = rec
@@ -1282,7 +1298,14 @@ func _on_stop_pressed() -> void:
 
 
 func _on_volume_changed(v: float) -> void:
-	_player.volume_db = -80.0 if v <= 0.001 else linear_to_db(v)
+	_global_vol = v
+	_apply_volume()
+
+
+# Final player gain = global slider × the playing track's Vol× multiplier.
+func _apply_volume() -> void:
+	var lin := _global_vol * _play_vol_mult
+	_player.volume_db = -80.0 if lin <= 0.001 else linear_to_db(lin)
 
 
 func _on_seek_released(_changed: bool) -> void:
@@ -1377,6 +1400,38 @@ func _get_plays(rec: Dictionary) -> int:
 func _get_tags(rec: Dictionary) -> String:
 	var ud: Variant = _userdata.get(String(rec.get("path", "")))
 	return String(ud.get("tags", "")) if typeof(ud) == TYPE_DICTIONARY else ""
+
+
+# Per-track playback gain multiplier (>0; default 1.0 = unchanged).
+func _get_vol_mult(rec: Variant) -> float:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return 1.0
+	var ud: Variant = _userdata.get(String(rec.get("path", "")))
+	if typeof(ud) == TYPE_DICTIONARY and ud.has("vol_mult"):
+		var v := float(ud["vol_mult"])
+		return v if v > 0.0 else 1.0
+	return 1.0
+
+
+func _fmt_mult(v: float) -> String:
+	return "" if is_equal_approx(v, 1.0) else str(v)
+
+
+# Inline edit of the Vol× cell. Validation: must be > 0; blank resets to 1.0.
+func _on_vol_mult_edited(rec: Variant, it: TreeItem) -> void:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return
+	var txt := it.get_text(COL_VOL_MULT).strip_edges()
+	var v := 1.0 if txt == "" else (txt.to_float() if txt.is_valid_float() else -1.0)
+	if v <= 0.0:
+		_status_label.text = "Vol× must be a number > 0 (got \"%s\")." % txt
+		it.set_text(COL_VOL_MULT, _fmt_mult(_get_vol_mult(rec)))   # revert
+		return
+	_set_userdata(rec, "vol_mult", v)
+	it.set_text(COL_VOL_MULT, _fmt_mult(v))
+	if rec == _playing_rec:                    # live-apply to the current track
+		_play_vol_mult = v
+		_apply_volume()
 
 
 func _set_userdata(rec: Variant, field: String, value: Variant) -> void:
@@ -1766,6 +1821,8 @@ func _play_chops() -> void:
 		_an_status.text = "Play chops needs 8/16-bit PCM (format %d)." % stream.format
 		return
 	_player.stream = preview
+	_play_vol_mult = _get_vol_mult(_an_rec)    # match the source track's Vol×
+	_apply_volume()
 	_player.play()
 	_stream_len = preview.get_length()
 	_playing_rec = null          # preview timeline != original; skip cursor + play-count

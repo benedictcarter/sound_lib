@@ -129,6 +129,10 @@ root) store the counts and chop params.
   cancel.
 - **Plays** — auto-increments each time a track plays through to the end
   ("finished listening"); stopping early does not count. Sortable.
+- **Vol×** — a per-track playback gain multiplier (double-click to edit; must be
+  > 0, e.g. `0.1` to quieten or `10` to boost). It multiplies that track's
+  volume on top of the global **Vol** slider (which stays a plain 0–1 control and
+  is unaffected). Blank = 1 (unchanged). Stored with your user data.
 - **Keyword panel** (right side) — keywords mined from filenames + library
   names, sorted by frequency. The count is the number of distinct **libraries**
   a keyword appears in (tokens are de-duped within each library, so a big
