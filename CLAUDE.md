@@ -38,6 +38,15 @@ for non-obvious gotchas.
   migrates a legacy linear `vol_mult` entry to dB on read. (NOTE: there is no
   digital headroom above 0 dBFS — a positive Gain dB boosts past the file's level
   and clips; that's physics, not a bug. Balance with <=0 values.)
+  **Loudness** column (`COL_LOUDNESS`, read-only) = measured integrated RMS in
+  dBFS from `loudness.json` (`indexer/loudness.py`, also stores true `peak_db`).
+  "Measure loudness" button runs `loudness.py --only-missing` in a thread with a
+  polled progress file (`_lm_*`, mirrors the chop-suggest job). **Normalize**
+  (`_normalize_selection`): sets Gain dB on selected rows = `target_dBFS − rms`,
+  CAPPED at `−peak` so no peak crosses 0 dBFS (never clips) — that's how you
+  level-balance game SFX (explosion −3, gunfire −13, zombie −23). dBFS (digital,
+  ceiling 0) ≠ dB SPL (acoustic, set by amp/speakers): you can't target a level
+  above 0 dBFS.
   **Loop** toggle (`_loop_chk`/`_loop_on`) sets the WAV's native
   `loop_mode = LOOP_FORWARD` (`_set_stream_loop`; seamless, and a looping stream
   emits no `finished` so loops don't count as plays). **Space** toggles play/pause
@@ -131,5 +140,6 @@ for non-obvious gotchas.
 - Tune detection on sample files: `py indexer/explore_gaps.py`
 - Batch sound counts: `py indexer/analyze.py`
 - Batch chop suggestions: `py indexer/suggest_chops.py`  (-> chopping.json)
+- Batch loudness measure: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`

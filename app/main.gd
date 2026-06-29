@@ -21,23 +21,24 @@ const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
 const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
 const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
 const COL_TAGS := 16    # user data (your own keywords; editable inline)
-const COL_GAIN_DB := 17 # user data: per-track playback gain in dB (for level balancing)
-const COL_COUNT := 18
+const COL_LOUDNESS := 17 # measured integrated loudness, dBFS (loudness.json; read-only)
+const COL_GAIN_DB := 18 # user data: per-track playback gain in dB (for level balancing)
+const COL_COUNT := 19
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
-	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags", "Gain dB",
+	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags", "Loudness", "Gain dB",
 ]
 # Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
-# Chop dB/gap/snd/pieces, Tags and Gain dB are special-cased in _sort_value (not in record).
+# Chop dB/gap/snd/pieces, Tags, Loudness and Gain dB are special-cased in _sort_value.
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
 	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
-	COL_GAIN_DB]
+	COL_LOUDNESS, COL_GAIN_DB]
 # Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
 # across a selection). Driven by the SELECTED column, not hard-wired to Tags.
 const SEL_EDIT_COLS := [COL_TAGS, COL_GAIN_DB]
@@ -68,7 +69,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200, 64]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200, 82, 64]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -180,6 +181,11 @@ var _an_path: String = ""
 var _chopping: Dictionary = {}
 var _chop_path: String = ""
 
+# measured loudness -- { rel_path : {"rms_db","peak_db"} } in dBFS. Lives with
+# the audio (loudness.json). Used to normalise tracks to a target level.
+var _loudness: Dictionary = {}
+var _lo_path: String = ""
+
 # analyser panel / live preview state
 var _graph: WaveGraph
 var _an_levels := PackedFloat32Array()    # cached envelope for the loaded file
@@ -213,6 +219,14 @@ var _chop_busy: bool = false
 var _chop_btn: Button
 var _chop_spec_path: String = ""
 var _chop_result_path: String = ""
+
+# loudness-measure job (loudness.py over files with no measurement yet)
+var _lm_thread: Thread = null
+var _lm_busy: bool = false
+var _lm_btn: Button
+var _lm_poll: Timer
+var _lm_progress_path: String = ""
+var _norm_target_edit: LineEdit       # target dBFS for the Normalize action
 
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
@@ -290,13 +304,16 @@ func _ready() -> void:
 	_ud_path = data_dir.path_join("userdata.json")
 	_an_path = data_dir.path_join("analysis.json")
 	_chop_path = data_dir.path_join("chopping.json")
+	_lo_path = data_dir.path_join("loudness.json")
 	_an_out_path = ProjectSettings.globalize_path("user://envelope.json")
 	_sg_progress_path = ProjectSettings.globalize_path("user://chop_progress.json")
 	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
+	_lm_progress_path = ProjectSettings.globalize_path("user://loudness_progress.json")
 	_load_userdata()
 	_load_analysis()
 	_load_chopping()
+	_load_loudness()
 	_build_ui()
 	_load_index()
 
@@ -484,6 +501,43 @@ func _build_ui() -> void:
 	_seek.drag_ended.connect(_on_seek_released)
 	pbar.add_child(_seek)
 
+	# --- loudness / normalize row ---------------------------------------
+	var lbar := HBoxContainer.new()
+	lbar.add_theme_constant_override("separation", 6)
+	root.add_child(lbar)
+
+	_lm_btn = Button.new()
+	_lm_btn.text = "Measure loudness"
+	_lm_btn.tooltip_text = "Measure each file's loudness (for files not measured yet)" \
+		+ " so Normalize can hit a target level. Reads their audio; fills the Loudness column live."
+	_lm_btn.pressed.connect(_measure_missing_loudness)
+	lbar.add_child(_lm_btn)
+
+	lbar.add_child(VSeparator.new())
+	var nlab := Label.new()
+	nlab.text = "Normalize selection to"
+	lbar.add_child(nlab)
+	_norm_target_edit = LineEdit.new()
+	_norm_target_edit.text = "-12"
+	_norm_target_edit.custom_minimum_size = Vector2(56, 0)
+	_norm_target_edit.tooltip_text = "Target loudness in dBFS (≤ 0). Lower = quieter."
+	lbar.add_child(_norm_target_edit)
+	var dbfs_lab := Label.new()
+	dbfs_lab.text = "dBFS"
+	lbar.add_child(dbfs_lab)
+	var norm_btn := Button.new()
+	norm_btn.text = "Set Gain dB"
+	norm_btn.tooltip_text = "Set Gain dB on the selected rows so each plays at the " \
+		+ "target loudness (capped so nothing clips). Needs measured loudness."
+	norm_btn.pressed.connect(_normalize_selection)
+	lbar.add_child(norm_btn)
+
+	var nhint := Label.new()
+	nhint.text = "  e.g. explosion -3, gunfire -13, zombie -23"
+	nhint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	nhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbar.add_child(nhint)
+
 	# --- rating + now-playing row ---------------------------------------
 	# Rating controls first; the expanding now-playing label goes LAST so it
 	# doesn't push the star buttons off-screen.
@@ -544,6 +598,12 @@ func _build_ui() -> void:
 	_sg_poll.wait_time = 1.0
 	_sg_poll.timeout.connect(_sg_tick)
 	add_child(_sg_poll)
+
+	# poll the loudness-measure job's progress file while it runs
+	_lm_poll = Timer.new()
+	_lm_poll.wait_time = 1.0
+	_lm_poll.timeout.connect(_lm_tick)
+	add_child(_lm_poll)
 
 	# coalesce chopping.json writes so a slider/graph drag saves once, not per tick
 	_chop_save_debounce = Timer.new()
@@ -897,6 +957,9 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _get_tags(rec)
 	if col == COL_GAIN_DB:
 		return _get_gain_db(rec)
+	if col == COL_LOUDNESS:
+		var r := _loudness_rms(rec)
+		return r if not is_nan(r) else -999.0
 	return rec.get(COL_FIELD[col])
 
 
@@ -958,13 +1021,23 @@ func _populate_tree() -> void:
 		it.set_text(COL_SIZE, _fmt_size(rec.get("size")))
 		_apply_userdata_cells(it, rec)
 		_apply_chop_cells(it, rec)
+		_apply_loudness_cell(it, rec)
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
-				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N, COL_GAIN_DB]:
+				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
+				COL_LOUDNESS, COL_GAIN_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		for c in EDITABLE_COLS:                 # tint editable cells a touch lighter
 			it.set_custom_bg_color(c, EDIT_CELL_BG)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
+
+
+func _apply_loudness_cell(it: TreeItem, rec: Dictionary) -> void:
+	var r := _loudness_rms(rec)
+	it.set_text(COL_LOUDNESS, "" if is_nan(r) else "%.1f dB" % r)
+	it.set_tooltip_text(COL_LOUDNESS,
+		"Measured integrated loudness (dBFS). Run 'Measure loudness' to fill. " \
+		+ "Used by Normalize to hit a target level.")
 
 
 func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
@@ -1775,6 +1848,31 @@ func _save_chopping() -> void:
 		f.store_string(JSON.stringify(_chopping))
 
 
+# ----- measured loudness (loudness.json, beside the audio) ------------------
+func _load_loudness() -> void:
+	if not FileAccess.file_exists(_lo_path):
+		return
+	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_lo_path))
+	if typeof(data) == TYPE_DICTIONARY:
+		_loudness = data
+
+
+func _get_loudness(rec: Variant) -> Variant:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return null
+	return _loudness.get(String(rec.get("path", "")))
+
+
+func _loudness_rms(rec: Dictionary) -> float:
+	var l: Variant = _get_loudness(rec)
+	return float(l["rms_db"]) if typeof(l) == TYPE_DICTIONARY and l.has("rms_db") else NAN
+
+
+func _loudness_peak(rec: Dictionary) -> float:
+	var l: Variant = _get_loudness(rec)
+	return float(l["peak_db"]) if typeof(l) == TYPE_DICTIONARY and l.has("peak_db") else NAN
+
+
 # The chop entry for a record, or null. A choppable file has "silence_db";
 # a continuous one is {"continuous": true} and shows blank chop columns.
 func _get_chop(rec: Variant) -> Variant:
@@ -1943,6 +2041,121 @@ func _reload_chop_cells() -> void:
 		if typeof(rec) == TYPE_DICTIONARY:
 			_apply_chop_cells(it, rec)
 		it = it.get_next()
+
+
+# ----- measure loudness (loudness.py over un-measured files, in a thread) ----
+func _measure_missing_loudness() -> void:
+	if _lm_busy:
+		return
+	var missing := 0
+	for rec in _all:
+		if String(rec.get("ext", "")).to_lower() != "wav":
+			continue
+		if not _loudness.has(String(rec.get("path", ""))):
+			missing += 1
+	if missing == 0:
+		_status_label.text = "Every file already has a loudness measurement."
+		return
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/loudness.py").simplify_path()
+	if FileAccess.file_exists(_lm_progress_path):
+		DirAccess.remove_absolute(_lm_progress_path)
+	_lm_busy = true
+	_lm_btn.disabled = true
+	_status_label.text = "Measuring loudness for %d file%s… (reads their audio)" % [
+		missing, "" if missing == 1 else "s"]
+	_lm_thread = Thread.new()
+	_lm_thread.start(_lm_run.bind(script, _lm_progress_path))
+	_lm_poll.start()
+
+
+func _lm_run(script: String, progress: String) -> void:
+	var output: Array = []
+	var args := [script, "--only-missing", "--progress", progress]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_lm_finished")
+
+
+func _lm_tick() -> void:
+	_reload_loudness_cells()
+	if FileAccess.file_exists(_lm_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_lm_progress_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			_status_label.text = "Measuring loudness… %d / %d" % [
+				int(d.get("analysed", 0)), int(d.get("total", 0))]
+
+
+func _lm_finished() -> void:
+	_lm_poll.stop()
+	if _lm_thread:
+		_lm_thread.wait_to_finish()
+		_lm_thread = null
+	_lm_busy = false
+	_lm_btn.disabled = false
+	_reload_loudness_cells()
+	_status_label.text = "Loudness measurement complete."
+
+
+func _reload_loudness_cells() -> void:
+	_load_loudness()
+	var root := _tree.get_root()
+	if root == null:
+		return
+	var it := root.get_first_child()
+	while it != null:
+		var rec: Variant = it.get_metadata(0)
+		if typeof(rec) == TYPE_DICTIONARY:
+			_apply_loudness_cell(it, rec)
+		it = it.get_next()
+
+
+# Set Gain dB on the selected rows so each plays at the target loudness (dBFS):
+# gain = target − measured RMS, capped so the peak never exceeds 0 (no clipping).
+func _normalize_selection() -> void:
+	var ttxt := _norm_target_edit.text.strip_edges()
+	if not ttxt.is_valid_float():
+		_status_label.text = "Normalize target must be a number (dBFS, e.g. -12)."
+		return
+	var target := ttxt.to_float()
+	var items := []
+	var it := _tree.get_next_selected(null)
+	while it != null:
+		if typeof(it.get_metadata(0)) == TYPE_DICTIONARY:
+			items.append(it)
+		it = _tree.get_next_selected(it)
+	if items.is_empty():
+		_status_label.text = "Select some rows first, then Set Gain dB."
+		return
+	var n := 0
+	var unmeasured := 0
+	var capped := 0
+	for row in items:
+		var rec: Dictionary = row.get_metadata(0)
+		var rms := _loudness_rms(rec)
+		var peak := _loudness_peak(rec)
+		if is_nan(rms) or is_nan(peak):
+			unmeasured += 1
+			continue
+		var gain := target - rms                 # bring this file's loudness to target
+		var max_clean := 0.0 - peak              # most boost before the peak clips
+		if gain > max_clean:
+			gain = max_clean                     # cap: play as loud as possible, no clip
+			capped += 1
+		gain = clampf(gain, GAIN_DB_MIN, GAIN_DB_MAX)
+		_set_userdata(rec, "gain_db", snappedf(gain, 0.1))
+		row.set_text(COL_GAIN_DB, _fmt_gain(snappedf(gain, 0.1)))
+		if rec == _playing_rec:
+			_play_gain_db = snappedf(gain, 0.1)
+			_apply_volume()
+		n += 1
+	var msg := "Set Gain dB on %d row%s for target %s dBFS." % [n, "" if n == 1 else "s", ttxt]
+	if capped > 0:
+		msg += "  %d capped to avoid clipping." % capped
+	if unmeasured > 0:
+		msg += "  %d not measured yet (run Measure loudness)." % unmeasured
+	_status_label.text = msg
 
 
 # ----- play chops: each piece + 1 s of silence, as a single preview stream ---
@@ -2168,6 +2381,8 @@ func _exit_tree() -> void:
 		_sg_thread.wait_to_finish()
 	if _chop_thread and _chop_thread.is_started():
 		_chop_thread.wait_to_finish()
+	if _lm_thread and _lm_thread.is_started():
+		_lm_thread.wait_to_finish()
 
 
 func _an_finished() -> void:

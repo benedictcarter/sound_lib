@@ -137,6 +137,17 @@ root) store the counts and chop params.
   and may clip. Double-click to edit (or drag-select a range and type). It's
   added on top of the global **Vol** slider, which stays a plain 0–1 control.
   Stored with your user data.
+- **Loudness** (read-only) — each file's measured integrated loudness in dBFS.
+  Click **Measure loudness** to fill it in (reads the audio; one-off, incremental).
+
+### Level-balancing to a target (auto Gain dB)
+Digital audio tops out at **0 dBFS** — there's no "louder than maximum", so a
+*target* level is always ≤ 0 dBFS (a relative level; real-world loudness is your
+amp/speakers). To balance a set of sounds: select them, type a **target dBFS**,
+and click **Set Gain dB** — the app sets each row's Gain dB to `target − its
+measured loudness`, **capped so no peak ever clips**. Give louder sounds a higher
+target (explosion −3, gunfire −13, zombie −23) and they'll sit at the right
+relative levels with no distortion.
 - **Keyword panel** (right side) — keywords mined from filenames + library
   names, sorted by frequency. The count is the number of distinct **libraries**
   a keyword appears in (tokens are de-duped within each library, so a big
