@@ -29,10 +29,15 @@ for non-obvious gotchas.
   `get_item_area_rect`); right-click clears. Tags (the "Tags" column) are an
   inline-editable column (`item_edited`), space/comma separated, feed the search.
   `_last_click_col` gates double-click playback so editing Rating/Tags/Chop ≠ play.
-  **Vol×** column (`COL_VOL_MULT`, userdata `vol_mult`, editable, validation >0)
-  is a per-track playback gain: final player gain = global Vol slider × this mult
-  (`_apply_volume` from `_global_vol` × `_play_vol_mult`; set in `_play_selected`/
-  `_play_chops`, live-applied on edit). It does NOT move the 0..1 global slider.
+  **Gain dB** column (`COL_GAIN_DB`, userdata `gain_db`, editable, clamped
+  [-80,24]) is a per-track playback gain in dB for level-balancing sounds against
+  each other (explosion 0, gunfire -10, zombie -20 — negatives attenuate cleanly,
+  no clipping). Final player gain = `linear_to_db(global Vol)` + this dB
+  (`_apply_volume` from `_global_vol` + `_play_gain_db`; set in `_play_selected`/
+  `_play_chops`, live on edit). Does NOT move the 0..1 global slider. `_get_gain_db`
+  migrates a legacy linear `vol_mult` entry to dB on read. (NOTE: there is no
+  digital headroom above 0 dBFS — a positive Gain dB boosts past the file's level
+  and clips; that's physics, not a bug. Balance with <=0 values.)
   **Loop** toggle (`_loop_chk`/`_loop_on`) sets the WAV's native
   `loop_mode = LOOP_FORWARD` (`_set_stream_loop`; seamless, and a looping stream
   emits no `finished` so loops don't count as plays). **Space** toggles play/pause
