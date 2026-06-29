@@ -38,8 +38,10 @@ for non-obvious gotchas.
   migrates a legacy linear `vol_mult` entry to dB on read. (NOTE: there is no
   digital headroom above 0 dBFS — a positive Gain dB boosts past the file's level
   and clips; that's physics, not a bug. Balance with <=0 values.)
-  **orig dB** column (`COL_LOUDNESS`, read-only) = measured integrated RMS in
-  dBFS from `loudness.json`. **final dB** (`COL_FINAL_DB`, read-only) = orig dB +
+  **orig dB** column (`COL_LOUDNESS`, read-only) = measured integrated LUFS
+  (ITU-R BS.1770 via pyloudnorm; RMS dBFS fallback for <400 ms or huge files —
+  `indexer/loud.py` `analyse_file`) from `loudness.json` key `lufs` (legacy
+  `rms_db` still read). **final dB** (`COL_FINAL_DB`, read-only) = orig dB +
   Gain dB = the resulting playback loudness (`_final_db`/`_apply_final_cell`,
   refreshed wherever Gain dB changes). Loudness is filled by the COMBINED
   "Analyse audio (chops + loudness)" button (`indexer/analyse_audio.py`, one read

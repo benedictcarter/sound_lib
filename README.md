@@ -133,7 +133,7 @@ root) store the counts and chop params.
   and may clip. Double-click to edit (or drag-select a range and type). It's
   added on top of the global **Vol** slider, which stays a plain 0–1 control.
   Stored with your user data.
-- **orig dB** (read-only) — each file's measured original loudness (dBFS). Fill it
+- **orig dB** (read-only) — each file's measured original loudness (integrated **LUFS**). Fill it
   with **Analyse audio** (above). **final dB** (read-only) = orig dB + Gain dB =
   the resulting playback loudness your Level is steering.
 

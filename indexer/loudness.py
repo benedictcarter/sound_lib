@@ -1,12 +1,14 @@
 """
-Measure per-file loudness for level-balancing: integrated RMS loudness and true
-sample peak, both in dBFS (0 = full scale, negative = below it). Writes
-loudness.json BESIDE THE AUDIO (the library root), keyed by relative path. The
-Godot app uses it to normalise tracks to a target dBFS (filling in Gain dB) so
-sounds sit at the right relative levels without clipping.
+Measure per-file loudness for level-balancing: integrated LUFS (ITU-R BS.1770;
+RMS fallback for very short/huge files) and true sample peak. Writes loudness.json
+BESIDE THE AUDIO (library root), keyed by relative path. The Godot app uses it to
+level-balance tracks (filling in Gain dB) without clipping.
+
+NOTE: the app's "Analyse audio" button uses analyse_audio.py (chops + loudness in
+one read); this standalone script is for loudness-only CLI runs.
 
 This reads the audio of every file (~217 GB), so a full run takes a while. It is
-incremental (by size) and supports the app's "Measure loudness" button:
+incremental (by size):
 
     py indexer/loudness.py
     py indexer/loudness.py --only-missing --progress <file>
@@ -20,34 +22,17 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-import soundfile as sf
+sys.path.insert(0, str(Path(__file__).parent))
+import loud as L
 
 REPO = Path(__file__).parent.parent
 INDEX = REPO / "app" / "index.json"
-EPS = 1e-12
 
 
 def measure(path: str):
-    """Return (rms_db, peak_db) in dBFS, streamed so big files don't blow memory."""
-    sumsq = 0.0
-    n = 0
-    peak = 0.0
-    for block in sf.blocks(path, blocksize=65536, dtype="float32", always_2d=True):
-        if block.shape[0] == 0:
-            break
-        mono = block.mean(axis=1) if block.shape[1] > 1 else block[:, 0]
-        sumsq += float(np.sum(mono.astype(np.float64) ** 2))
-        n += mono.shape[0]
-        p = float(np.max(np.abs(block)))            # true peak across all channels
-        if p > peak:
-            peak = p
-    if n == 0:
-        return None
-    rms = (sumsq / n) ** 0.5
-    rms_db = 20.0 * np.log10(max(rms, EPS))
-    peak_db = 20.0 * np.log10(max(peak, EPS))
-    return round(float(rms_db), 2), round(float(peak_db), 2)
+    """Return (loudness_db [LUFS, or RMS for short/huge files], peak_db)."""
+    _, _, _, loud_db, peak_db = L.analyse_file(path)
+    return loud_db, peak_db
 
 
 def _write_progress(path: str | None, analysed: int, total: int, done: bool) -> None:
@@ -99,7 +84,7 @@ def main() -> None:
         try:
             res = measure(str(root / rel))
             if res is not None:
-                out[rel] = {"rms_db": res[0], "peak_db": res[1], "size": size}
+                out[rel] = {"lufs": res[0], "peak_db": res[1], "size": size}
                 analysed += 1
         except Exception as e:  # noqa: BLE001
             print(f"  ! {rel}: {e}", file=sys.stderr)

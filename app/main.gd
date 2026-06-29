@@ -227,7 +227,7 @@ var _star_btns: Array = []    # 5 rating buttons in the player bar
 var _chopping: Dictionary = {}
 var _chop_path: String = ""
 
-# measured loudness -- { rel_path : {"rms_db","peak_db"} } in dBFS. Lives with
+# measured loudness -- { rel_path : {"lufs","peak_db"} } in dB. Lives with
 # the audio (loudness.json). Used to normalise tracks to a target level.
 var _loudness: Dictionary = {}
 var _lo_path: String = ""
@@ -1063,7 +1063,7 @@ func _apply_loudness_cell(it: TreeItem, rec: Dictionary) -> void:
 	var r := _loudness_rms(rec)
 	it.set_text(COL_LOUDNESS, "" if is_nan(r) else "%.1f dB" % r)
 	it.set_tooltip_text(COL_LOUDNESS,
-		"Measured original loudness (dBFS) of the file. Run 'Analyse audio' to fill.")
+		"Measured original loudness (LUFS, integrated). Run 'Analyse audio' to fill.")
 	_apply_final_cell(it, rec)
 
 
@@ -2031,8 +2031,14 @@ func _get_loudness(rec: Variant) -> Variant:
 
 
 func _loudness_rms(rec: Dictionary) -> float:
+	# integrated LUFS; falls back to a legacy "rms_db" entry if present.
 	var l: Variant = _get_loudness(rec)
-	return float(l["rms_db"]) if typeof(l) == TYPE_DICTIONARY and l.has("rms_db") else NAN
+	if typeof(l) == TYPE_DICTIONARY:
+		if l.has("lufs"):
+			return float(l["lufs"])
+		if l.has("rms_db"):
+			return float(l["rms_db"])
+	return NAN
 
 
 func _loudness_peak(rec: Dictionary) -> float:
