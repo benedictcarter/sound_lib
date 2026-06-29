@@ -108,11 +108,11 @@ def main() -> None:
         if done % 100 == 0:
             rate = done / max(1e-6, time.time() - t0)
             print(f"  {done}/{n}  ({analysed} analysed)  {rate:.1f} files/s")
-            chop_path.write_text(json.dumps(chop), encoding="utf-8")   # checkpoints
-            loud_path.write_text(json.dumps(loud), encoding="utf-8")
+            L.write_json(chop_path, chop)   # checkpoints (atomic)
+            L.write_json(loud_path, loud)
 
-    chop_path.write_text(json.dumps(chop), encoding="utf-8")
-    loud_path.write_text(json.dumps(loud), encoding="utf-8")
+    L.write_json(chop_path, chop)
+    L.write_json(loud_path, loud)
     _write_progress(args.progress, analysed, n, True)
     print(f"\nDone: {analysed} files analysed this run "
           f"(chops + loudness). {time.time()-t0:.0f}s")

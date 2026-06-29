@@ -13,8 +13,24 @@ signal in memory and we won't load a ~740 MB file whole).
 
 from __future__ import annotations
 
+import json
+import os
+
 import numpy as np
 import soundfile as sf
+
+
+def write_json(path, data) -> None:
+    """Atomic JSON write: temp file + fsync, then os.replace (atomic, overwrites).
+    A crash mid-write can't corrupt the live file."""
+    p = str(path)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
 
 FLOOR_DB = -100.0
 EPS = 1e-9

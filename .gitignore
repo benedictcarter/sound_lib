@@ -1,6 +1,9 @@
 # --- Generated index (derived data, can be rebuilt by indexer) ---
 /index.json
 /app/index.json
+# atomic-write temp/backup artifacts (userdata/chopping/loudness/index)
+*.json.tmp
+*.json.bak
 
 # NOTE: your data (ratings/plays/tags -> userdata.json) and gap-analysis results
 # (analysis.json) now live in the library data folder (library_root, e.g.

@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import index as IDX          # reuse parse_wav + the index.json location
+import loud as L             # atomic JSON writer
 
 
 def _record(path: Path, root: Path, parent: dict) -> dict:
@@ -64,7 +65,7 @@ def _add_to_index(new_files: list[Path], parent: dict) -> list[dict]:
     files = sorted(by_path.values(), key=lambda r: r["path"].lower())
     data["files"] = files
     data["count"] = len(files)
-    idx_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    L.write_json(idx_path, data)              # atomic: never corrupt the live index
     return new_recs
 
 

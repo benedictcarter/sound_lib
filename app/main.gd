@@ -1566,27 +1566,50 @@ func _on_playback_finished() -> void:
 # ===========================================================================
 #  User data (ratings + play counts)  -- app/userdata.json
 # ===========================================================================
-func _load_userdata() -> void:
-	if not FileAccess.file_exists(_ud_path):
-		return
-	var f := FileAccess.open(_ud_path, FileAccess.READ)
+# Crash-safe JSON write: write <path>.tmp, verify it parses, then swap it into
+# place keeping one <path>.bak. A crash mid-write can't corrupt the live file.
+func _save_json_atomic(path: String, data: Variant) -> bool:
+	var tmp := path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
-		return
-	var data: Variant = JSON.parse_string(f.get_as_text())
-	if typeof(data) == TYPE_DICTIONARY:
-		_userdata = data
+		push_warning("save failed (open %s): %d" % [tmp, FileAccess.get_open_error()])
+		return false
+	f.store_string(JSON.stringify(data))
+	f.flush()
+	f = null                                   # close before renaming
+	# verify the temp parses back to the same type (guards a truncated write)
+	if typeof(JSON.parse_string(FileAccess.get_file_as_string(tmp))) != typeof(data):
+		push_warning("save failed (verify): %s" % tmp)
+		return false
+	if FileAccess.file_exists(path):
+		var bak := path + ".bak"
+		if FileAccess.file_exists(bak):
+			DirAccess.remove_absolute(bak)
+		DirAccess.rename_absolute(path, bak)   # keep previous as backup
+	DirAccess.rename_absolute(tmp, path)
+	return true
+
+
+# Load a JSON dict, falling back to the .bak if the live file is missing/corrupt.
+func _load_json_dict(path: String) -> Dictionary:
+	for p in [path, path + ".bak"]:
+		if FileAccess.file_exists(p):
+			var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+			if typeof(d) == TYPE_DICTIONARY:
+				return d
+	return {}
+
+
+func _load_userdata() -> void:
+	_userdata = _load_json_dict(_ud_path)
 
 
 func _save_userdata() -> void:
-	var f := FileAccess.open(_ud_path, FileAccess.WRITE)
-	if f == null:
-		var msg := "ERROR: could not save your data to %s (code %d)" % [
-			_ud_path, FileAccess.get_open_error()]
+	if not _save_json_atomic(_ud_path, _userdata):
+		var msg := "ERROR: could not save your data to %s" % _ud_path
 		push_warning(msg)
 		if _status_label:
 			_status_label.text = msg
-		return
-	f.store_string(JSON.stringify(_userdata))
 
 
 func _get_rating(rec: Dictionary) -> int:
@@ -2002,26 +2025,16 @@ func _stars(n: int) -> String:
 # ===========================================================================
 # ----- chop params (chopping.json, beside the audio) -----------------------
 func _load_chopping() -> void:
-	if not FileAccess.file_exists(_chop_path):
-		return
-	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_chop_path))
-	if typeof(data) == TYPE_DICTIONARY:
-		_chopping = data
+	_chopping = _load_json_dict(_chop_path)
 
 
 func _save_chopping() -> void:
-	var f := FileAccess.open(_chop_path, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify(_chopping))
+	_save_json_atomic(_chop_path, _chopping)
 
 
 # ----- measured loudness (loudness.json, beside the audio) ------------------
 func _load_loudness() -> void:
-	if not FileAccess.file_exists(_lo_path):
-		return
-	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_lo_path))
-	if typeof(data) == TYPE_DICTIONARY:
-		_loudness = data
+	_loudness = _load_json_dict(_lo_path)
 
 
 func _get_loudness(rec: Variant) -> Variant:

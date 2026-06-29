@@ -93,9 +93,9 @@ def main() -> None:
         if done % 100 == 0:
             rate = done / max(1e-6, time.time() - t0)
             print(f"  {done}/{n}  ({analysed} measured)  {rate:.1f} files/s")
-            out_path.write_text(json.dumps(out), encoding="utf-8")  # checkpoint
+            L.write_json(out_path, out)  # checkpoint (atomic)
 
-    out_path.write_text(json.dumps(out), encoding="utf-8")
+    L.write_json(out_path, out)
     _write_progress(args.progress, analysed, n, True)
     print(f"\nDone: {len(out)} files, {analysed} measured this run. "
           f"{time.time()-t0:.0f}s -> {out_path}")
