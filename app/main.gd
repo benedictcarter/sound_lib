@@ -187,6 +187,35 @@ class WaveGraph extends Control:
 				return true
 		return false
 
+
+## Thin seek-only strip placed directly under the visualiser, full width. Its dot
+## sits at pos*width — the same mapping as the graph's playhead — so they line up
+## exactly. Click/drag seeks playback; it never touches the chop dB.
+class SeekBar extends Control:
+	signal seek_requested(fraction: float)
+	var pos := -1.0                   # 0..1; < 0 hides the handle
+
+	func _gui_input(event: InputEvent) -> void:
+		var scrub := false
+		if event is InputEventMouseButton and event.pressed:
+			scrub = event.button_index == MOUSE_BUTTON_LEFT
+		elif event is InputEventMouseMotion:
+			scrub = (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
+		if scrub:
+			seek_requested.emit(clampf(event.position.x / maxf(size.x, 1.0), 0.0, 1.0))
+			accept_event()
+
+	func _draw() -> void:
+		var w := size.x
+		var h := size.y
+		var cy := h * 0.5
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0.09, 0.10, 0.13))
+		draw_line(Vector2(0, cy), Vector2(w, cy), Color(0.5, 0.5, 0.55, 0.55), 2.0)
+		if pos >= 0.0:
+			var px := pos * w
+			draw_line(Vector2(px, 2), Vector2(px, h - 2), Color(1, 1, 1, 0.5), 1.0)
+			draw_circle(Vector2(px, cy), 6.0, Color(1, 1, 1, 0.95))
+
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
 var _filtered: Array = []     # current view
@@ -216,6 +245,7 @@ var _lo_path: String = ""
 
 # analyser panel / live preview state
 var _graph: WaveGraph
+var _seekbar: SeekBar
 var _an_levels := PackedFloat32Array()    # cached envelope for the loaded file
 var _an_frame_s: float = 0.02
 var _an_duration: float = 0.0
@@ -461,6 +491,14 @@ func _build_ui() -> void:
 
 	_build_analyser(root)
 
+	# --- seek strip directly under the visualiser (aligned; seek only) --
+	_seekbar = SeekBar.new()
+	_seekbar.custom_minimum_size = Vector2(0, 16)
+	_seekbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_seekbar.tooltip_text = "Drag to move the play position (does not change the chop dB)."
+	_seekbar.seek_requested.connect(_on_graph_seek)
+	root.add_child(_seekbar)
+
 	# --- player bar -----------------------------------------------------
 	var pbar := HBoxContainer.new()
 	pbar.add_theme_constant_override("separation", 8)
@@ -512,7 +550,7 @@ func _build_ui() -> void:
 	# scrub); its play dot and white cursor line up exactly. The hint fills the
 	# rest of this transport row.
 	var seekhint := Label.new()
-	seekhint.text = "  ↑ click the visualiser to scrub"
+	seekhint.text = "  ↑ drag the seek strip to move position (chop dB unchanged)"
 	seekhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
 	seekhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pbar.add_child(seekhint)
@@ -1521,6 +1559,9 @@ func _process(_delta: float) -> void:
 		if ph != _graph.playhead:
 			_graph.playhead = ph
 			_graph.queue_redraw()
+			if _seekbar:
+				_seekbar.pos = ph
+				_seekbar.queue_redraw()
 	if _player.stream == null or _stream_len <= 0.0:
 		return
 	if _player.playing:

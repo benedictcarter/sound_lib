@@ -95,6 +95,10 @@ for non-obvious gotchas.
   AND set the chop dB (`threshold_picked` -> `_on_graph_threshold_picked`);
   LEFT-drag = scrub only; RIGHT-click/drag = set chop dB only. Play dot rides the
   foot of the white cursor line (same x => aligned). `_db_at_y`/`_frac_at_x`.
+  A thin `SeekBar` strip (`_seekbar`) sits directly under the graph (both full
+  width in the same VBox, handle at `pos*width` = graph's `playhead*width`, so
+  exactly aligned); drag it to seek WITHOUT touching the chop dB. `_process`
+  drives both from the same fraction; both seek via `_on_graph_seek`.
   Chop columns: "Chop dB"/"Chop gap"/"Min snd" editable (mirror the three
   analyser sliders), "Chop pieces" read-only (= stored `chops`; continuous files
   show 1). `_apply_chop_cells`/`_on_chop_edited`. A USER param change persists to
