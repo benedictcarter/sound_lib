@@ -140,22 +140,25 @@ root) store the counts and chop params.
 - **Loudness** (read-only) — each file's measured integrated loudness in dBFS.
   Click **Measure loudness** to fill it in (reads the audio; one-off, incremental).
 
-### Level-balancing to a target (Target dB → Gain dB)
-Digital audio tops out at **0 dBFS** — there's no "louder than maximum", so a
-*target* level is always ≤ 0 dBFS (a relative level; real-world loudness is your
-amp/speakers). Also: **peak ≠ loudness** — matching peaks does *not* make sounds
-equally loud (a gunshot and a drone at the same peak sound very different). So the
-target is a **loudness** target, and the app handles the peak as a clip guard.
+### Level-balancing on a 0–10 scale (Level → Gain dB)
+The **Level** column is a simple **0–10 perceptual loudness dial** — no negative
+numbers, no dB math:
 
-- **Target dB** is an editable, persistent column: the loudness you want a track
-  to play at. The app auto-fills its **Gain dB** = `target − measured loudness`,
-  **capped so the peak never clips**. Set the *same* Target on sounds you want
-  equally loud; give louder things a higher target (explosion −3, gunfire −13,
-  zombie −23).
-- It re-applies automatically: edit a Target (or drag-select Target cells and
-  type one, or use **Set Target on selection**), and Gain dB updates. Re-run
-  **Measure loudness** and every targeted row recomputes. If a target would clip
-  a file, its Gain dB is capped to that file's clean maximum and the status says so.
+- **10** = the loudest you want (≈ −10 dBFS, with safe headroom), **0** = silence,
+  and **halving the number halves the perceived loudness** (5 sounds half as loud
+  as 10, 2.5 a quarter…). It's built on the rule that *+10 dB ≈ twice as loud*.
+- Set the **same Level** on sounds you want equally loud; give louder things a
+  higher number (explosion `10`, gunfire `6`, footstep `3`). Decimals are fine.
+
+Under the hood it's still **loudness**, not peak (matching peaks does *not* make
+sounds equally loud), and digital audio tops out at 0 dBFS — so the app measures
+each file, sets its **Gain dB** to hit the Level, and **caps so the peak never
+clips**. Your amp/speakers set the overall room volume; the Levels set the balance.
+
+- Edit a Level cell (or drag-select a range and type one, or use **Set Level …
+  on selection**) and Gain dB updates. Re-run **Measure loudness** and every
+  level'd row recomputes. If a Level is hotter than a file can play cleanly, its
+  Gain dB is capped to that file's clean max and the status says so.
 - **Keyword panel** (right side) — keywords mined from filenames + library
   names, sorted by frequency. The count is the number of distinct **libraries**
   a keyword appears in (tokens are de-duped within each library, so a big

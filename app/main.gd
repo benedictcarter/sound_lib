@@ -22,31 +22,31 @@ const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.jso
 const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
 const COL_TAGS := 16    # user data (your own keywords; editable inline)
 const COL_LOUDNESS := 17 # measured integrated loudness, dBFS (loudness.json; read-only)
-const COL_TARGET_DB := 18 # user data: desired loudness (dBFS); auto-fills Gain dB
+const COL_LEVEL := 18   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
 const COL_GAIN_DB := 19 # user data: per-track applied playback gain in dB
 const COL_COUNT := 20
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
-	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags", "Loudness", "Target dB", "Gain dB",
+	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags", "Loudness", "Level", "Gain dB",
 ]
 # Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
-# Chop dB/gap/snd/pieces, Tags, Loudness, Target dB and Gain dB are special-cased.
+# Chop dB/gap/snd/pieces, Tags, Loudness, Level and Gain dB are special-cased.
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
 	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
 	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
-	COL_LOUDNESS, COL_TARGET_DB, COL_GAIN_DB]
+	COL_LOUDNESS, COL_LEVEL, COL_GAIN_DB]
 # Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
 # across a selection). Driven by the SELECTED column, not hard-wired to Tags.
-const SEL_EDIT_COLS := [COL_TAGS, COL_TARGET_DB, COL_GAIN_DB]
+const SEL_EDIT_COLS := [COL_TAGS, COL_LEVEL, COL_GAIN_DB]
 # Columns you can edit (inline or by clicking) — tinted a touch lighter so the
 # editable cells stand out from the read-only metadata.
 const EDITABLE_COLS := [COL_RATING, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND,
-	COL_TAGS, COL_TARGET_DB, COL_GAIN_DB]
+	COL_TAGS, COL_LEVEL, COL_GAIN_DB]
 const EDIT_CELL_BG := Color(1, 1, 1, 0.08)   # subtle lighter overlay on editable cells
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
@@ -227,7 +227,7 @@ var _lm_busy: bool = false
 var _lm_btn: Button
 var _lm_poll: Timer
 var _lm_progress_path: String = ""
-var _norm_target_edit: LineEdit       # target dBFS for the Normalize action
+var _norm_target_edit: LineEdit       # the 0-10 Level for the "set on selection" action
 
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
@@ -516,25 +516,25 @@ func _build_ui() -> void:
 
 	lbar.add_child(VSeparator.new())
 	var nlab := Label.new()
-	nlab.text = "Normalize selection to"
+	nlab.text = "Set Level"
 	lbar.add_child(nlab)
 	_norm_target_edit = LineEdit.new()
-	_norm_target_edit.text = "-12"
-	_norm_target_edit.custom_minimum_size = Vector2(56, 0)
-	_norm_target_edit.tooltip_text = "Target loudness in dBFS (≤ 0). Lower = quieter."
+	_norm_target_edit.text = "7"
+	_norm_target_edit.custom_minimum_size = Vector2(48, 0)
+	_norm_target_edit.tooltip_text = "Loudness on the 0-10 scale (10 = loudest, 5 = half as loud, 0 = silence)."
 	lbar.add_child(_norm_target_edit)
 	var dbfs_lab := Label.new()
-	dbfs_lab.text = "dBFS"
+	dbfs_lab.text = "(0-10)"
 	lbar.add_child(dbfs_lab)
 	var norm_btn := Button.new()
-	norm_btn.text = "Set Target on selection"
-	norm_btn.tooltip_text = "Set this Target dB on the selected rows (and recompute " \
-		+ "their Gain dB to hit it, capped so nothing clips). Needs measured loudness."
+	norm_btn.text = "on selection"
+	norm_btn.tooltip_text = "Set this Level on the selected rows (and recompute " \
+		+ "their Gain dB to hit it, capped so nothing clips). Needs measured Loudness."
 	norm_btn.pressed.connect(_normalize_selection)
 	lbar.add_child(norm_btn)
 
 	var nhint := Label.new()
-	nhint.text = "  e.g. explosion -3, gunfire -13, zombie -23"
+	nhint.text = "  e.g. explosion 10, gunfire 6, footstep 3"
 	nhint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	nhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lbar.add_child(nhint)
@@ -958,8 +958,8 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _get_tags(rec)
 	if col == COL_GAIN_DB:
 		return _get_gain_db(rec)
-	if col == COL_TARGET_DB:
-		var t := _get_target_db(rec)
+	if col == COL_LEVEL:
+		var t := _get_level(rec)
 		return t if not is_nan(t) else -999.0
 	if col == COL_LOUDNESS:
 		var r := _loudness_rms(rec)
@@ -1028,7 +1028,7 @@ func _populate_tree() -> void:
 		_apply_loudness_cell(it, rec)
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
 				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
-				COL_LOUDNESS, COL_TARGET_DB, COL_GAIN_DB]:
+				COL_LOUDNESS, COL_LEVEL, COL_GAIN_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		for c in EDITABLE_COLS:                 # tint editable cells a touch lighter
 			it.set_custom_bg_color(c, EDIT_CELL_BG)
@@ -1054,16 +1054,16 @@ func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
 	it.set_text(COL_TAGS, _get_tags(rec))
 	it.set_editable(COL_TAGS, true)            # double-click to edit
 	it.set_tooltip_text(COL_TAGS, "Double-click to edit. Separate keywords with spaces or commas.")
-	it.set_text(COL_TARGET_DB, _fmt_target(_get_target_db(rec)))
-	it.set_editable(COL_TARGET_DB, true)
-	it.set_tooltip_text(COL_TARGET_DB,
-		"Desired loudness (dBFS, ≤ 0). The app sets Gain dB so this track plays at " \
-		+ "that loudness — capped so it never clips. Set the same target on sounds " \
-		+ "you want equally loud (needs measured Loudness). Blank = use Gain dB directly.")
+	it.set_text(COL_LEVEL, _fmt_level(_get_level(rec)))
+	it.set_editable(COL_LEVEL, true)
+	it.set_tooltip_text(COL_LEVEL,
+		"How loud you want this to play, on a 0-10 perceptual scale (10 = loudest, " \
+		+ "5 = half as loud, 0 = silence). The app sets Gain dB to hit it, capped so " \
+		+ "it never clips. Same number = equally loud (needs measured Loudness).")
 	it.set_text(COL_GAIN_DB, _fmt_gain(_get_gain_db(rec)))
 	it.set_editable(COL_GAIN_DB, true)
 	it.set_tooltip_text(COL_GAIN_DB,
-		"Applied playback gain in dB (auto-filled from Target dB when set, else " \
+		"Applied playback gain in dB (auto-filled from Level when set, else " \
 		+ "manual). Negative = quieter (no clipping); positive may clip. Blank = 0.")
 
 
@@ -1104,7 +1104,7 @@ func _on_row_activated() -> void:
 	# Double-click plays -- except on the editable Rating/Tags/Chop cells, where
 	# a double-click opens the editor / sets a rating instead of playing.
 	if _last_click_col in [COL_RATING, COL_TAGS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND,
-			COL_TARGET_DB, COL_GAIN_DB]:
+			COL_LEVEL, COL_GAIN_DB]:
 		return
 	_play_selected()
 
@@ -1123,7 +1123,7 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
 	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND \
-			or col == COL_TARGET_DB or col == COL_GAIN_DB:
+			or col == COL_LEVEL or col == COL_GAIN_DB:
 		return                                 # let the inline editor handle it
 	# Don't autoplay while Shift/Ctrl-extending a selection range.
 	var ranging := Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_CTRL)
@@ -1143,8 +1143,8 @@ func _on_tree_item_edited() -> void:
 		_on_chop_edited(rec, it, col)
 	elif col == COL_GAIN_DB:
 		_on_gain_db_edited(rec, it)
-	elif col == COL_TARGET_DB:
-		_on_target_db_edited(rec, it)
+	elif col == COL_LEVEL:
+		_on_level_edited(rec, it)
 
 
 # ===========================================================================
@@ -1586,9 +1586,26 @@ func _fmt_gain(v: float) -> String:
 	return "" if is_equal_approx(v, 0.0) else str(snappedf(v, 0.1))
 
 
-# Target formatting differs: 0 dBFS is a real target (loudest), so only an UNSET
-# target (NAN) shows blank.
-func _fmt_target(v: float) -> String:
+# Level scale: a 0-10 perceptual loudness dial. 10 = LEVEL_TOP_DBFS (loudest),
+# 0 = silence, and halving the dial halves perceived loudness = -10 dB (the
+# "+10 dB ≈ twice as loud" rule). dBFS = top + 10·log2(level/10).
+const LEVEL_TOP_DBFS := -10.0
+const LEVEL_MAX := 10.0
+const LEVEL_SILENT_DBFS := -120.0     # level 0 -> effectively silent
+
+
+func _level_to_dbfs(level: float) -> float:
+	if level <= 0.0:
+		return LEVEL_SILENT_DBFS
+	return LEVEL_TOP_DBFS + 10.0 * (log(level / LEVEL_MAX) / log(2.0))
+
+
+func _dbfs_to_level(dbfs: float) -> float:
+	return clampf(LEVEL_MAX * pow(2.0, (dbfs - LEVEL_TOP_DBFS) / 10.0), 0.0, LEVEL_MAX)
+
+
+# Level cell shows 0-10 (1 decimal); only an UNSET level (NAN) is blank.
+func _fmt_level(v: float) -> String:
 	return "" if is_nan(v) else str(snappedf(v, 0.1))
 
 
@@ -1612,42 +1629,46 @@ func _on_gain_db_edited(rec: Variant, it: TreeItem) -> void:
 		_apply_volume()
 
 
-# Desired loudness (dBFS) the track should play at, or NAN if not set.
-func _get_target_db(rec: Variant) -> float:
+# Desired Level (0-10) for the track, or NAN if not set. Migrates an older
+# `target_db` (dBFS) entry to the 0-10 scale on read.
+func _get_level(rec: Variant) -> float:
 	if typeof(rec) != TYPE_DICTIONARY:
 		return NAN
 	var ud: Variant = _userdata.get(String(rec.get("path", "")))
-	if typeof(ud) == TYPE_DICTIONARY and ud.get("target_db") != null:
-		return float(ud["target_db"])
+	if typeof(ud) == TYPE_DICTIONARY:
+		if ud.get("level") != null:
+			return float(ud["level"])
+		if ud.get("target_db") != null:        # legacy dBFS target -> level
+			return _dbfs_to_level(float(ud["target_db"]))
 	return NAN
 
 
-# The Gain dB that makes a track play at its Target loudness: target − measured
-# RMS, but capped at −peak so the peak never crosses 0 dBFS (no clipping). NAN if
-# the track has no target or hasn't been measured. Returns [gain, capped].
+# The Gain dB that makes a track play at its Level: target_dBFS − measured RMS,
+# capped at −peak so the peak never crosses 0 dBFS (no clipping). NAN if the track
+# has no level or hasn't been measured. Returns [gain, capped].
 func _target_gain(rec: Variant) -> Array:
-	var t := _get_target_db(rec)
-	if is_nan(t):
+	var lvl := _get_level(rec)
+	if is_nan(lvl):
 		return [NAN, false]
 	var rms := _loudness_rms(rec)
 	var peak := _loudness_peak(rec)
 	if is_nan(rms) or is_nan(peak):
 		return [NAN, false]
-	var g := t - rms
+	var g := _level_to_dbfs(lvl) - rms        # bring loudness to the level's dBFS
 	var max_clean := 0.0 - peak
 	var capped := g > max_clean
 	g = clampf(minf(g, max_clean), GAIN_DB_MIN, GAIN_DB_MAX)
 	return [snappedf(g, 0.1), capped]
 
 
-# Recompute + store Gain dB from a row's Target (if measured). Updates the Gain
-# cell and live playback. Returns 0 = no target, 1 = applied, -1 = unmeasured.
+# Recompute + store Gain dB from a row's Level (if measured). Updates the Gain
+# cell and live playback. Returns 0 = no level, 1 = applied, -1 = unmeasured.
 func _apply_target_to_gain(rec: Variant, it: TreeItem) -> int:
-	if is_nan(_get_target_db(rec)):
+	if is_nan(_get_level(rec)):
 		return 0
 	var res := _target_gain(rec)
 	if is_nan(res[0]):
-		return -1                              # has a target but no measurement yet
+		return -1                              # has a level but no measurement yet
 	var g: float = res[0]
 	var key := String(rec.get("path", ""))      # write in memory; caller saves once
 	var ud: Dictionary = _userdata.get(key, {})
@@ -1661,38 +1682,39 @@ func _apply_target_to_gain(rec: Variant, it: TreeItem) -> int:
 	return 1
 
 
-# Inline edit of the Target dB cell. Stores the target (blank clears it) and
-# recomputes Gain dB to hit that loudness, clip-safe.
-func _on_target_db_edited(rec: Variant, it: TreeItem) -> void:
+# Inline edit of the Level cell (0-10; blank clears it). Stores the level and
+# recomputes Gain dB to hit that perceived loudness, clip-safe.
+func _on_level_edited(rec: Variant, it: TreeItem) -> void:
 	if typeof(rec) != TYPE_DICTIONARY:
 		return
-	var txt := it.get_text(COL_TARGET_DB).strip_edges()
+	var key := String(rec.get("path", ""))
+	var txt := it.get_text(COL_LEVEL).strip_edges()
 	if txt == "":
-		var k := String(rec.get("path", ""))       # clear target; leave Gain as-is
-		var u: Dictionary = _userdata.get(k, {})
+		var u: Dictionary = _userdata.get(key, {})  # clear level; leave Gain as-is
+		u.erase("level")
 		u.erase("target_db")
-		_userdata[k] = u
+		_userdata[key] = u
 		_save_userdata()
-		it.set_text(COL_TARGET_DB, "")
+		it.set_text(COL_LEVEL, "")
 		return
 	if not txt.is_valid_float():
-		_status_label.text = "Target dB must be a number, dBFS (got \"%s\")." % txt
-		it.set_text(COL_TARGET_DB, _fmt_target(_get_target_db(rec)))
+		_status_label.text = "Level must be a number 0-10 (got \"%s\")." % txt
+		it.set_text(COL_LEVEL, _fmt_level(_get_level(rec)))
 		return
-	var t := txt.to_float()
-	var key := String(rec.get("path", ""))
+	var lvl := clampf(txt.to_float(), 0.0, LEVEL_MAX)
 	var ud: Dictionary = _userdata.get(key, {})
-	ud["target_db"] = t
+	ud["level"] = lvl
+	ud.erase("target_db")                       # supersede any legacy entry
 	_userdata[key] = ud
-	it.set_text(COL_TARGET_DB, _fmt_target(t))
+	it.set_text(COL_LEVEL, _fmt_level(lvl))
 	var r := _apply_target_to_gain(rec, it)
-	_save_userdata()                            # persist target + recomputed gain
+	_save_userdata()                            # persist level + recomputed gain
 	if r == -1:
-		_status_label.text = "Target set. Run 'Measure loudness' to apply it (no measurement yet)."
+		_status_label.text = "Level set. Run 'Measure loudness' to apply it (no measurement yet)."
 	else:
 		var res := _target_gain(rec)
 		if res.size() == 2 and res[1]:
-			_status_label.text = "Target %s dBFS would clip this file — Gain dB capped to its max clean level." % txt
+			_status_label.text = "Level %s is hotter than this file can play cleanly — Gain dB capped (no clip)." % _fmt_level(lvl)
 
 
 func _set_userdata(rec: Variant, field: String, value: Variant) -> void:
@@ -1746,8 +1768,8 @@ func _cell_get(rec: Variant, col: int) -> String:
 			return _get_tags(rec)
 		COL_GAIN_DB:
 			return _fmt_gain(_get_gain_db(rec))
-		COL_TARGET_DB:
-			return _fmt_target(_get_target_db(rec))
+		COL_LEVEL:
+			return _fmt_level(_get_level(rec))
 	return ""
 
 
@@ -1778,19 +1800,22 @@ func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
 				_play_gain_db = v
 				_apply_volume()
 			return true
-		COL_TARGET_DB:
+		COL_LEVEL:
 			var s2 := raw.strip_edges()
 			var ud3: Dictionary = _userdata.get(key, {})
 			if s2 == "":
-				ud3.erase("target_db")              # clear the target
+				ud3.erase("level")                  # clear the level
+				ud3.erase("target_db")
 				_userdata[key] = ud3
-				it.set_text(COL_TARGET_DB, "")
+				it.set_text(COL_LEVEL, "")
 				return true
 			if not s2.is_valid_float():
 				return false
-			ud3["target_db"] = s2.to_float()
+			var lvl := clampf(s2.to_float(), 0.0, LEVEL_MAX)
+			ud3["level"] = lvl
+			ud3.erase("target_db")
 			_userdata[key] = ud3
-			it.set_text(COL_TARGET_DB, _fmt_target(s2.to_float()))
+			it.set_text(COL_LEVEL, _fmt_level(lvl))
 			_apply_target_to_gain(rec, it)          # recompute Gain dB (if measured)
 			return true
 	return false
@@ -2248,14 +2273,14 @@ func _reload_loudness_cells() -> void:
 		it = it.get_next()
 
 
-# Set Gain dB on the selected rows so each plays at the target loudness (dBFS):
-# gain = target − measured RMS, capped so the peak never exceeds 0 (no clipping).
+# Set the Level (0-10) on the selected rows (and recompute their Gain dB to hit
+# that loudness, capped so nothing clips).
 func _normalize_selection() -> void:
 	var ttxt := _norm_target_edit.text.strip_edges()
 	if not ttxt.is_valid_float():
-		_status_label.text = "Normalize target must be a number (dBFS, e.g. -12)."
+		_status_label.text = "Level must be a number 0-10 (e.g. 7)."
 		return
-	var target := ttxt.to_float()
+	var lvl := clampf(ttxt.to_float(), 0.0, LEVEL_MAX)
 	var items := []
 	var it := _tree.get_next_selected(null)
 	while it != null:
@@ -2263,7 +2288,7 @@ func _normalize_selection() -> void:
 			items.append(it)
 		it = _tree.get_next_selected(it)
 	if items.is_empty():
-		_status_label.text = "Select some rows first, then Set Gain dB."
+		_status_label.text = "Select some rows first, then set the Level."
 		return
 	var n := 0
 	var unmeasured := 0
@@ -2272,9 +2297,10 @@ func _normalize_selection() -> void:
 		var rec: Dictionary = row.get_metadata(0)
 		var key := String(rec.get("path", ""))
 		var ud: Dictionary = _userdata.get(key, {})
-		ud["target_db"] = target                 # persistent target (saved once below)
+		ud["level"] = lvl                         # persistent level (saved once below)
+		ud.erase("target_db")
 		_userdata[key] = ud
-		row.set_text(COL_TARGET_DB, _fmt_target(target))
+		row.set_text(COL_LEVEL, _fmt_level(lvl))
 		var r := _apply_target_to_gain(rec, row)
 		if r == -1:
 			unmeasured += 1
@@ -2283,7 +2309,7 @@ func _normalize_selection() -> void:
 			if _target_gain(rec)[1]:
 				capped += 1
 	_save_userdata()
-	var msg := "Target %s dBFS set on %d row%s." % [ttxt, items.size(), "" if items.size() == 1 else "s"]
+	var msg := "Level %s set on %d row%s." % [_fmt_level(lvl), items.size(), "" if items.size() == 1 else "s"]
 	if capped > 0:
 		msg += "  %d capped to avoid clipping." % capped
 	if unmeasured > 0:

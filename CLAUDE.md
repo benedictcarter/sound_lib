@@ -42,15 +42,17 @@ for non-obvious gotchas.
   dBFS from `loudness.json` (`indexer/loudness.py`, also stores true `peak_db`).
   "Measure loudness" button runs `loudness.py --only-missing` in a thread with a
   polled progress file (`_lm_*`, mirrors the chop-suggest job).
-  **Target dB** column (`COL_TARGET_DB`, userdata `target_db`, editable) = the
-  desired loudness (dBFS, ≤0). It auto-drives **Gain dB**: `_apply_target_to_gain`
-  sets `gain_db = clamp(target − rms, ., −peak)` (capped at −peak so it never
-  clips) whenever you edit the target (`_on_target_db_edited`), bulk-type it, hit
-  "Set Target on selection" (`_normalize_selection`), or re-measure loudness
+  **Level** column (`COL_LEVEL`, userdata `level`, editable) = a 0-10 PERCEPTUAL
+  loudness dial: 10 = `LEVEL_TOP_DBFS` (-10 dBFS), 0 = silence, halving the number
+  = half perceived loudness = -10 dB (`_level_to_dbfs` = top + 10·log2(level/10),
+  built on "+10 dB ≈ twice as loud"). It auto-drives **Gain dB**:
+  `_apply_target_to_gain` sets `gain_db = clamp(level_to_dbfs(level) − rms, .,
+  −peak)` (capped at −peak so it never clips) on edit (`_on_level_edited`),
+  bulk-type, "Set Level on selection" (`_normalize_selection`), or re-measure
   (`_recompute_targets` in `_lm_finished`). `_target_gain` returns [gain, capped].
-  So set the SAME target on sounds you want equally LOUD (loudness, not peak —
-  equal peak ≠ equal loudness). dBFS (digital, ceiling 0) ≠ dB SPL (acoustic, set
-  by amp/speakers): you can't target a level above 0 dBFS.
+  Same Level = equally LOUD (loudness, not peak — equal peak ≠ equal loudness).
+  Migrates a legacy dBFS `target_db` to a level via `_dbfs_to_level` on read.
+  dBFS (digital, ceiling 0) ≠ dB SPL (acoustic, set by amp/speakers).
   **Loop** toggle (`_loop_chk`/`_loop_on`) sets the WAV's native
   `loop_mode = LOOP_FORWARD` (`_set_stream_loop`; seamless, and a looping stream
   emits no `finished` so loops don't count as plays). **Space** toggles play/pause
