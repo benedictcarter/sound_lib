@@ -83,7 +83,8 @@ const DEF_MIN_SOUND_S := 0.3
 ## Draws the loudness (dBFS) envelope vs time, the silence threshold, the
 ## detected "dead zones" (gaps) and a playback cursor.
 class WaveGraph extends Control:
-	signal threshold_picked(db: float)   # emitted when the user clicks/drags in it
+	signal threshold_picked(db: float)     # right-click/drag: set the silence threshold
+	signal seek_requested(fraction: float) # left-click/drag: scrub playback
 
 	var levels := PackedFloat32Array()
 	var segments: Array = []          # [[start_frame, end_frame], ...]
@@ -91,6 +92,7 @@ class WaveGraph extends Control:
 	var playhead: float = -1.0        # 0..1; < 0 hides
 	const TOP_DB := 0.0
 	const BOT_DB := -90.0
+	const TRACK_PAD := 7.0            # px from the bottom for the seek track + dot
 
 	func _yfor(db: float) -> float:
 		return clampf((TOP_DB - db) / (TOP_DB - BOT_DB), 0.0, 1.0) * size.y
@@ -99,15 +101,24 @@ class WaveGraph extends Control:
 		var t := clampf(y / maxf(size.y, 1.0), 0.0, 1.0)
 		return TOP_DB - t * (TOP_DB - BOT_DB)
 
-	# Click or drag anywhere in the graph to set the silence threshold to that
-	# vertical level (in dB). The handler in main applies + recomputes live.
+	func _frac_at_x(x: float) -> float:
+		return clampf(x / maxf(size.x, 1.0), 0.0, 1.0)
+
+	# Left button = scrub playback to that horizontal position; right button = set
+	# the silence threshold from the vertical position. Both work on click + drag.
 	func _gui_input(event: InputEvent) -> void:
-		var pick := false
-		if event is InputEventMouseButton:
-			pick = event.button_index == MOUSE_BUTTON_LEFT and event.pressed
+		var left := false
+		var right := false
+		if event is InputEventMouseButton and event.pressed:
+			left = event.button_index == MOUSE_BUTTON_LEFT
+			right = event.button_index == MOUSE_BUTTON_RIGHT
 		elif event is InputEventMouseMotion:
-			pick = (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
-		if pick:
+			left = (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
+			right = (event.button_mask & MOUSE_BUTTON_MASK_RIGHT) != 0
+		if left:
+			seek_requested.emit(_frac_at_x(event.position.x))
+			accept_event()
+		elif right:
 			threshold_picked.emit(_db_at_y(event.position.y))
 			accept_event()
 
@@ -149,10 +160,15 @@ class WaveGraph extends Control:
 		var lyt := clampf(ty - 4.0, 11.0, h - 2.0)
 		draw_string(font, Vector2(w - lw - 6.0, lyt), lbl,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ocol)
-		# playback cursor
+		# seek track along the very bottom (this IS the play bar), + playback cursor
+		# and the play dot riding on it -- dot and white line share x, so they line
+		# up exactly by construction. Left-click/drag the graph to scrub.
+		var track_y := h - TRACK_PAD
+		draw_line(Vector2(0, track_y), Vector2(w, track_y), Color(0.5, 0.5, 0.55, 0.45), 2.0)
 		if playhead >= 0.0:
-			draw_line(Vector2(playhead * w, 0), Vector2(playhead * w, h),
-				Color(1, 1, 1, 0.85), 1.0)
+			var px := playhead * w
+			draw_line(Vector2(px, 0), Vector2(px, h), Color(1, 1, 1, 0.85), 1.0)
+			draw_circle(Vector2(px, track_y), 5.0, Color(1, 1, 1, 0.95))
 
 	func _frame_in_segment(fi: int) -> bool:
 		for s in segments:
@@ -249,8 +265,6 @@ var _keywords: Array = []   # [ [token, library_count], ... ] sorted desc
 # player
 var _player: AudioStreamPlayer
 var _play_btn: Button
-var _seek: HSlider
-var _seeking: bool = false
 var _time_label: Label
 var _now_label: Label
 var _stream_len: float = 0.0
@@ -490,17 +504,14 @@ func _build_ui() -> void:
 	reveal.pressed.connect(_on_reveal)
 	pbar.add_child(reveal)
 
-	# Seek slider LAST: an EXPAND_FILL child shoves trailing siblings off the
-	# right edge (same quirk as Tree expand columns), so nothing must follow it.
-	_seek = HSlider.new()
-	_seek.min_value = 0.0
-	_seek.max_value = 1.0
-	_seek.step = 0.001
-	_seek.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_seek.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_seek.drag_started.connect(func(): _seeking = true)
-	_seek.drag_ended.connect(_on_seek_released)
-	pbar.add_child(_seek)
+	# Seeking now lives in the visualiser directly above (left-click/drag to
+	# scrub); its play dot and white cursor line up exactly. The hint fills the
+	# rest of this transport row.
+	var seekhint := Label.new()
+	seekhint.text = "  ↑ click the visualiser to scrub"
+	seekhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
+	seekhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pbar.add_child(seekhint)
 
 	# --- loudness / normalize row ---------------------------------------
 	var lbar := HBoxContainer.new()
@@ -712,8 +723,9 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_graph = WaveGraph.new()
 	_graph.custom_minimum_size = Vector2(0, 120)
 	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_graph.tooltip_text = "Click or drag to set the silence threshold (dB)."
+	_graph.tooltip_text = "Left-click/drag to scrub playback; right-click/drag to set the silence threshold."
 	_graph.threshold_picked.connect(_on_graph_threshold_picked)
+	_graph.seek_requested.connect(_on_graph_seek)
 	root.add_child(_graph)
 	_update_param_labels()
 
@@ -1424,8 +1436,19 @@ func _on_play_pressed() -> void:
 func _on_stop_pressed() -> void:
 	_player.stop()
 	_play_btn.text = "Play"
-	_seek.value = 0.0
 	_time_label.text = "0:00 / 0:00"
+
+
+# Left-click/drag on the visualiser scrubs the player to that fraction.
+func _on_graph_seek(fraction: float) -> void:
+	if _player.stream == null:
+		_play_selected()                       # nothing loaded -> start, then seek
+	if _player.stream == null or _stream_len <= 0.0:
+		return
+	_player.seek(clampf(fraction, 0.0, 1.0) * _stream_len)
+	if not _player.playing and not _player.stream_paused:
+		_player.play()
+	_play_btn.text = "Pause"
 
 
 func _on_volume_changed(v: float) -> void:
@@ -1458,15 +1481,6 @@ func _on_loop_toggled(on: bool) -> void:
 		_set_stream_loop(_player.stream)       # apply to the current track live
 
 
-func _on_seek_released(_changed: bool) -> void:
-	if _player.stream != null and _stream_len > 0.0:
-		_player.seek(_seek.value * _stream_len)
-		if not _player.playing and not _player.stream_paused:
-			_player.play()
-			_play_btn.text = "Pause"
-	_seeking = false
-
-
 func _on_reveal() -> void:
 	var rec: Variant = _selected_rec()
 	if rec == null:
@@ -1489,20 +1503,19 @@ func _input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	_update_rating_hover()
-	# playback cursor on the analyser graph (only when the playing file is the
-	# one shown in the analyser)
+	# playback cursor + play dot on the visualiser, when the loaded file is the one
+	# shown in the analyser (playing OR paused).
 	if _graph and not _an_levels.is_empty():
 		var ph := -1.0
-		if _player.playing and _playing_rec != null and _playing_rec == _an_rec and _stream_len > 0.0:
+		if _player.stream != null and _playing_rec != null and _playing_rec == _an_rec and _stream_len > 0.0:
 			ph = clampf(_player.get_playback_position() / _stream_len, 0.0, 1.0)
 		if ph != _graph.playhead:
 			_graph.playhead = ph
 			_graph.queue_redraw()
 	if _player.stream == null or _stream_len <= 0.0:
 		return
-	if _player.playing and not _seeking:
+	if _player.playing:
 		var pos := _player.get_playback_position()
-		_seek.value = clampf(pos / _stream_len, 0.0, 1.0)
 		_time_label.text = "%s / %s" % [_fmt_time(pos), _fmt_time(_stream_len)]
 	if not _player.playing and not _player.stream_paused and _play_btn.text == "Pause":
 		_play_btn.text = "Play"  # finished
