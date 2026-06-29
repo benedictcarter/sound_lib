@@ -71,8 +71,15 @@ for non-obvious gotchas.
 - KEY finding: an ABSOLUTE -60 dBFS floor generalises far better than a
   peak-relative threshold (a loud transient lifts a relative threshold into the
   ambient bed and explodes false-gap counts). See LESSONS_LEARNT.md.
-- Next (phase 2): `indexer/chop.py` to split at gaps into `name_chop_NNN.wav`;
-  chopped files must INHERIT the parent's tags. Manual only — never auto-chop.
+- `indexer/chop.py <audio> <spec.json> <result.json>` — writes each piece (given
+  as `segments_s` boundaries in seconds) as `<stem>_chopped_NNN<ext>` BESIDE the
+  original via soundfile (keeps 24-bit/subtype). NEVER deletes the original. App:
+  "Chop to files" button (`_chop_selected`) chops the analysed file at the exact
+  segments shown (blue lines) in a thread; re-index to surface the new files.
+  "Play chops" (`_play_chops`/`_build_chops_stream`) auditions the pieces with
+  1 s silence between them as one in-memory AudioStreamWAV (8/16-bit PCM only).
+- Chops are first-class files after re-indexing (tag them, chop them again). Tag
+  INHERITANCE is intentionally NOT done — you tag chops yourself. Never auto-chop.
 
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)

@@ -196,6 +196,14 @@ var _sg_btn: Button
 var _sg_poll: Timer
 var _sg_progress_path: String = ""
 
+# chop-to-disk job (chop.py writes name_chopped_NNN next to the original; the
+# original is kept). Runs in a thread.
+var _chop_thread: Thread = null
+var _chop_busy: bool = false
+var _chop_btn: Button
+var _chop_spec_path: String = ""
+var _chop_result_path: String = ""
+
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
 var _bundle_opt: OptionButton
@@ -252,6 +260,8 @@ func _ready() -> void:
 	_chop_path = data_dir.path_join("chopping.json")
 	_an_out_path = ProjectSettings.globalize_path("user://envelope.json")
 	_sg_progress_path = ProjectSettings.globalize_path("user://chop_progress.json")
+	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
+	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
 	_load_userdata()
 	_load_analysis()
 	_load_chopping()
@@ -546,6 +556,20 @@ func _build_analyser(root: VBoxContainer) -> void:
 	save.tooltip_text = "Store this sound count in the Sounds column"
 	save.pressed.connect(_save_current_count)
 	bar.add_child(save)
+
+	var playchops := Button.new()
+	playchops.text = "Play chops"
+	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
+		+ "between them, so the boundaries are audibly obvious."
+	playchops.pressed.connect(_play_chops)
+	bar.add_child(playchops)
+
+	_chop_btn = Button.new()
+	_chop_btn.text = "Chop to files"
+	_chop_btn.tooltip_text = "Write each piece as name_chopped_NNN.wav next to the " \
+		+ "original (the original is KEPT). Re-run the indexer to see them."
+	_chop_btn.pressed.connect(_chop_selected)
+	bar.add_child(_chop_btn)
 
 	_sg_btn = Button.new()
 	_sg_btn.text = "Suggest missing chops"
@@ -1445,6 +1469,129 @@ func _reload_chop_cells() -> void:
 		it = it.get_next()
 
 
+# ----- play chops: each piece + 1 s of silence, as a single preview stream ---
+func _play_chops() -> void:
+	if typeof(_an_rec) != TYPE_DICTIONARY or _graph.segments.is_empty():
+		_an_status.text = "Analyse a file first — no chops to play."
+		return
+	var abs := _abs_path(_an_rec)
+	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
+		_an_status.text = "Play chops supports existing WAV files only."
+		return
+	var stream: AudioStreamWAV = AudioStreamWAV.load_from_file(abs)
+	if stream == null:
+		_an_status.text = "Could not load WAV: %s" % abs
+		return
+	var preview := _build_chops_stream(stream)
+	if preview == null:
+		_an_status.text = "Play chops needs 8/16-bit PCM (format %d)." % stream.format
+		return
+	_player.stream = preview
+	_player.play()
+	_stream_len = preview.get_length()
+	_playing_rec = null          # preview timeline != original; skip cursor + play-count
+	_playing_item = null
+	_play_btn.text = "Pause"
+	_now_label.text = "Playing %d chops (1 s gaps):  %s" % [
+		_graph.segments.size(), String(_an_rec.get("filename", ""))]
+
+
+# Concatenate the loaded WAV's pieces (segment frames -> samples) with 1 s of
+# silence between each. Returns null for non-PCM formats we can't byte-slice.
+func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
+	var bps := 0
+	if stream.format == AudioStreamWAV.FORMAT_8_BITS:
+		bps = 1
+	elif stream.format == AudioStreamWAV.FORMAT_16_BITS:
+		bps = 2
+	else:
+		return null
+	var ch := 2 if stream.stereo else 1
+	var frame_bytes := bps * ch
+	var sr := stream.mix_rate
+	var data := stream.data
+	var total := data.size() / frame_bytes
+	var silence := PackedByteArray()
+	silence.resize(int(sr) * frame_bytes)        # 1 s of zeros (= silence, signed PCM)
+	var out := PackedByteArray()
+	for s in _graph.segments:
+		var a := clampi(int(round(float(s[0]) * _an_frame_s * sr)), 0, total)
+		var b := clampi(int(round(float(s[1]) * _an_frame_s * sr)), 0, total)
+		if b <= a:
+			continue
+		out.append_array(data.slice(a * frame_bytes, b * frame_bytes))
+		out.append_array(silence)
+	if out.is_empty():
+		return null
+	var sw := AudioStreamWAV.new()
+	sw.format = stream.format
+	sw.mix_rate = sr
+	sw.stereo = stream.stereo
+	sw.data = out
+	return sw
+
+
+# ----- chop to files: chop.py writes name_chopped_NNN.wav beside the original --
+func _chop_selected() -> void:
+	if _chop_busy:
+		return
+	if typeof(_an_rec) != TYPE_DICTIONARY or _graph.segments.is_empty():
+		_an_status.text = "Analyse a file first — nothing to chop."
+		return
+	if _graph.segments.size() <= 1:
+		_an_status.text = "Only 1 piece at these settings — nothing to chop."
+		return
+	var abs := _abs_path(_an_rec)
+	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
+		_an_status.text = "Chop supports existing WAV files only."
+		return
+	# WYSIWYG: chop exactly the pieces drawn (current segments), in seconds.
+	var segs_s: Array = []
+	for s in _graph.segments:
+		segs_s.append([float(s[0]) * _an_frame_s, float(s[1]) * _an_frame_s])
+	var f := FileAccess.open(_chop_spec_path, FileAccess.WRITE)
+	if f == null:
+		_an_status.text = "Could not write chop spec."
+		return
+	f.store_string(JSON.stringify({"segments_s": segs_s}))
+	f.close()
+	if FileAccess.file_exists(_chop_result_path):
+		DirAccess.remove_absolute(_chop_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/chop.py").simplify_path()
+	_chop_busy = true
+	_chop_btn.disabled = true
+	_an_status.text = "Chopping %s into %d pieces…" % [
+		String(_an_rec.get("filename", "")), segs_s.size()]
+	_chop_thread = Thread.new()
+	_chop_thread.start(_chop_run.bind(script, abs, _chop_spec_path, _chop_result_path))
+
+
+func _chop_run(script: String, audio: String, spec: String, result: String) -> void:
+	var output: Array = []
+	var args := [script, audio, spec, result]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:                       # py launcher not found; try python
+		OS.execute("python", args, output, true)
+	call_deferred("_chop_finished")
+
+
+func _chop_finished() -> void:
+	_chop_busy = false
+	if _chop_thread:
+		_chop_thread.wait_to_finish()
+		_chop_thread = null
+	_chop_btn.disabled = false
+	if not FileAccess.file_exists(_chop_result_path):
+		_an_status.text = "Chop failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_chop_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		_an_status.text = "Chop error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		return
+	_an_status.text = "Wrote %d chops next to the original (kept). Re-run the indexer to see them." % int(d.get("count", 0))
+
+
 func _update_param_labels() -> void:
 	if _sil_lbl: _sil_lbl.text = "%d dB" % int(_sil_slider.value)
 	if _gap_lbl: _gap_lbl.text = "%.1f s" % _gap_slider.value
@@ -1491,6 +1638,8 @@ func _exit_tree() -> void:
 		_an_thread.wait_to_finish()
 	if _sg_thread and _sg_thread.is_started():
 		_sg_thread.wait_to_finish()
+	if _chop_thread and _chop_thread.is_started():
+		_chop_thread.wait_to_finish()
 
 
 func _an_finished() -> void:

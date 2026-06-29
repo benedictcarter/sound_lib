@@ -102,8 +102,15 @@ counts them and previews where it would chop.
   refine the silence threshold, min-gap, or min-sound for a file (the same three
   knobs as the analyser sliders). **Chop pieces** (read-only) shows how many
   pieces the file chops into at those settings (continuous = 1; blank until
-  analysed). Editing the file currently in the analyser recounts live. Chopping
-  itself is a separate, manual step.
+  analysed). Editing the file currently in the analyser recounts live.
+
+### Auditioning and chopping
+- **Play chops** plays each detected piece in turn with **1 second of silence
+  between them**, so the chop boundaries are audibly obvious.
+- **Chop to files** writes each piece as `<name>_chopped_NNN.wav` **next to the
+  original** (the original is **kept**), preserving bit depth. It chops exactly
+  the pieces shown (the blue boundaries). Re-run the indexer to see the new
+  files — then you can play, rate, tag, and even chop *them* like any other file.
 
 Detection lives in `indexer/gaps.py` and is mirrored in the app (GDScript) so
 the sliders respond instantly. `analysis.json` / `chopping.json` (in the library
