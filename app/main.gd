@@ -269,8 +269,13 @@ var _chop_result_path: String = ""
 
 var _norm_target_edit: LineEdit       # the 0-10 Level for the "set on selection" action
 
+# persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
+var _prefs: Dictionary = {}
+var _prefs_path: String = ""
+
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
+var _vol_slider: HSlider
 var _bundle_opt: OptionButton
 var _supplier_opt: OptionButton
 var _library_opt: OptionButton
@@ -334,7 +339,9 @@ var _chop_save_debounce: Timer # coalesce chopping.json writes during a live dra
 
 
 func _ready() -> void:
-	_size_window_to_screen()
+	_prefs_path = ProjectSettings.globalize_path("user://prefs.json")
+	_prefs = _load_json_dict(_prefs_path)
+	_apply_window_prefs()
 	_player = $Player
 	_player.finished.connect(_on_playback_finished)
 	# Your data lives WITH the audio library (outside the code repo), so it
@@ -352,6 +359,7 @@ func _ready() -> void:
 	_load_loudness()
 	_build_ui()
 	_load_index()
+	_apply_view_prefs()
 
 
 # Open at half the screen AREA (≈71% on each axis), keeping the screen's aspect
@@ -373,6 +381,75 @@ func _size_window_to_screen() -> void:
 	win.mode = Window.MODE_WINDOWED
 	win.size = size
 	win.position = DisplayServer.screen_get_position(scr) + (ss - size) / 2
+
+
+# Restore saved window geometry, else size to the screen. Ignores absurd/tiny
+# saved sizes (e.g. from a headless run) so the window never opens unusable.
+func _apply_window_prefs() -> void:
+	var sw := int(_prefs.get("win_w", 0))
+	var sh := int(_prefs.get("win_h", 0))
+	if sw >= 800 and sh >= 500:
+		var win := get_window()
+		win.mode = Window.MODE_WINDOWED
+		win.size = Vector2i(sw, sh)
+		if _prefs.has("win_x") and _prefs.has("win_y"):
+			win.position = Vector2i(int(_prefs["win_x"]), int(_prefs["win_y"]))
+	else:
+		_size_window_to_screen()
+
+
+# Restore column widths, sort, search/filters and toggles after the UI + data
+# are built. Calls _apply() once at the end to re-filter/sort with them.
+func _apply_view_prefs() -> void:
+	if _prefs.get("col_w") is Array and _prefs["col_w"].size() == COL_COUNT:
+		for c in COL_COUNT:
+			_col_w[c] = int(_prefs["col_w"][c])
+			_tree.set_column_custom_minimum_width(c, _col_w[c])
+	if _prefs.has("sort_col"):
+		_sort_col = clampi(int(_prefs["sort_col"]), 0, COL_COUNT - 1)
+		_sort_asc = bool(_prefs.get("sort_asc", true))
+		for c in COL_COUNT:
+			var arrow := ("  v" if _sort_asc else "  ^") if c == _sort_col else ""
+			_tree.set_column_title(c, COL_TITLES[c] + arrow)
+	if _prefs.has("autoplay"):
+		_autoplay.button_pressed = bool(_prefs["autoplay"])
+	if _prefs.has("loop"):
+		_loop_chk.button_pressed = bool(_prefs["loop"])   # toggled -> _loop_on
+	if _prefs.has("volume"):
+		_vol_slider.value = float(_prefs["volume"])       # value_changed -> _on_volume_changed
+	if _prefs.has("search"):
+		_search.text = String(_prefs["search"])
+	_restore_filter(_bundle_opt, String(_prefs.get("f_bundle", "")))
+	_restore_filter(_supplier_opt, String(_prefs.get("f_supplier", "")))
+	_restore_filter(_library_opt, String(_prefs.get("f_library", "")))
+	_restore_filter(_ext_opt, String(_prefs.get("f_ext", "")))
+	_apply()
+
+
+func _restore_filter(opt: OptionButton, value: String) -> void:
+	if value == "":
+		return
+	for i in opt.item_count:
+		if String(opt.get_item_metadata(i)) == value:
+			opt.select(i)
+			return
+
+
+func _save_prefs() -> void:
+	var win := get_window()
+	_prefs = {
+		"win_w": win.size.x, "win_h": win.size.y,
+		"win_x": win.position.x, "win_y": win.position.y,
+		"col_w": _col_w.duplicate(),
+		"sort_col": _sort_col, "sort_asc": _sort_asc,
+		"search": _search.text if _search else "",
+		"f_bundle": _selected_meta(_bundle_opt), "f_supplier": _selected_meta(_supplier_opt),
+		"f_library": _selected_meta(_library_opt), "f_ext": _selected_meta(_ext_opt),
+		"autoplay": _autoplay.button_pressed if _autoplay else true,
+		"loop": _loop_on,
+		"volume": _global_vol,
+	}
+	_save_json_atomic(_prefs_path, _prefs)
 
 
 ## Directory for user data (ratings / play counts / tags) and analysis results:
@@ -517,15 +594,15 @@ func _build_ui() -> void:
 	var vlab := Label.new()
 	vlab.text = "Vol"
 	pbar.add_child(vlab)
-	var vol := HSlider.new()
-	vol.min_value = 0.0
-	vol.max_value = 1.0
-	vol.step = 0.01
-	vol.value = 0.9
-	vol.custom_minimum_size = Vector2(110, 0)
-	vol.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	vol.value_changed.connect(_on_volume_changed)
-	pbar.add_child(vol)
+	_vol_slider = HSlider.new()
+	_vol_slider.min_value = 0.0
+	_vol_slider.max_value = 1.0
+	_vol_slider.step = 0.01
+	_vol_slider.value = 0.9
+	_vol_slider.custom_minimum_size = Vector2(110, 0)
+	_vol_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_vol_slider.value_changed.connect(_on_volume_changed)
+	pbar.add_child(_vol_slider)
 	_on_volume_changed(0.9)
 
 	var reveal := Button.new()
@@ -2525,6 +2602,7 @@ func _an_run(script: String, audio: String, out: String) -> void:
 
 
 func _exit_tree() -> void:
+	_save_prefs()
 	if _chop_save_debounce and _chop_save_debounce.time_left > 0.0:
 		_save_chopping()                 # flush a pending coalesced write
 	if _an_thread and _an_thread.is_started():
