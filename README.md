@@ -140,14 +140,22 @@ root) store the counts and chop params.
 - **Loudness** (read-only) — each file's measured integrated loudness in dBFS.
   Click **Measure loudness** to fill it in (reads the audio; one-off, incremental).
 
-### Level-balancing to a target (auto Gain dB)
+### Level-balancing to a target (Target dB → Gain dB)
 Digital audio tops out at **0 dBFS** — there's no "louder than maximum", so a
 *target* level is always ≤ 0 dBFS (a relative level; real-world loudness is your
-amp/speakers). To balance a set of sounds: select them, type a **target dBFS**,
-and click **Set Gain dB** — the app sets each row's Gain dB to `target − its
-measured loudness`, **capped so no peak ever clips**. Give louder sounds a higher
-target (explosion −3, gunfire −13, zombie −23) and they'll sit at the right
-relative levels with no distortion.
+amp/speakers). Also: **peak ≠ loudness** — matching peaks does *not* make sounds
+equally loud (a gunshot and a drone at the same peak sound very different). So the
+target is a **loudness** target, and the app handles the peak as a clip guard.
+
+- **Target dB** is an editable, persistent column: the loudness you want a track
+  to play at. The app auto-fills its **Gain dB** = `target − measured loudness`,
+  **capped so the peak never clips**. Set the *same* Target on sounds you want
+  equally loud; give louder things a higher target (explosion −3, gunfire −13,
+  zombie −23).
+- It re-applies automatically: edit a Target (or drag-select Target cells and
+  type one, or use **Set Target on selection**), and Gain dB updates. Re-run
+  **Measure loudness** and every targeted row recomputes. If a target would clip
+  a file, its Gain dB is capped to that file's clean maximum and the status says so.
 - **Keyword panel** (right side) — keywords mined from filenames + library
   names, sorted by frequency. The count is the number of distinct **libraries**
   a keyword appears in (tokens are de-duped within each library, so a big
