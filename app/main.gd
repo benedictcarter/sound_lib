@@ -340,7 +340,9 @@ func _build_ui() -> void:
 	_tree.columns = COL_COUNT
 	_tree.column_titles_visible = true
 	_tree.hide_root = true
-	_tree.select_mode = Tree.SELECT_ROW
+	# Multi (cell) select so you can Ctrl/Shift-pick a range of Tags cells and
+	# Ctrl+C / Ctrl+V like a spreadsheet. Row actions still use get_selected().
+	_tree.select_mode = Tree.SELECT_MULTI
 	_tree.allow_reselect = true
 	# Column widths (resizable by dragging the dividers in the header row).
 	_col_w = COL_DEFAULT_W.duplicate()
@@ -351,6 +353,7 @@ func _build_ui() -> void:
 		_tree.set_column_custom_minimum_width(c, _col_w[c])
 	_tree.column_title_clicked.connect(_on_title_clicked)
 	_tree.item_selected.connect(_on_row_selected)
+	_tree.multi_selected.connect(_on_multi_selected)   # SELECT_MULTI emits this
 	_tree.item_activated.connect(_on_row_activated)
 	_tree.item_mouse_selected.connect(_on_tree_mouse_selected)
 	_tree.item_edited.connect(_on_tree_item_edited)
@@ -927,6 +930,12 @@ func _on_row_selected() -> void:
 	_an_debounce.start()
 
 
+# In SELECT_MULTI the tree emits multi_selected instead of item_selected; route
+# it through the same per-selection refresh (auto-analyse + rating buttons).
+func _on_multi_selected(_item: TreeItem, _col: int, _selected: bool) -> void:
+	_on_row_selected()
+
+
 # Auto-analyse the selected row (fired by _an_debounce) unless it's already the
 # file in the analyser, isn't a WAV, or an analysis is already running.
 func _auto_analyse() -> void:
@@ -961,7 +970,9 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		return                                 # never play when rating
 	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND:
 		return                                 # let the inline editor handle it
-	if mouse_btn == MOUSE_BUTTON_LEFT and _autoplay.button_pressed:
+	# Don't autoplay while Shift/Ctrl-extending a selection range.
+	var ranging := Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_CTRL)
+	if mouse_btn == MOUSE_BUTTON_LEFT and _autoplay.button_pressed and not ranging:
 		_play_selected()
 
 
@@ -1003,6 +1014,17 @@ func _divider_at(pos: Vector2) -> int:
 
 
 func _on_tree_gui_input(event: InputEvent) -> void:
+	# Spreadsheet-style tag copy/paste (Ctrl+C / Ctrl+V). Only fires when the
+	# tree has focus and no cell editor is open (the editor LineEdit grabs keys).
+	if event is InputEventKey and event.pressed and event.ctrl_pressed:
+		if event.keycode == KEY_C:
+			_copy_selected_tags()
+			_tree.accept_event()
+			return
+		elif event.keycode == KEY_V:
+			_paste_tags_to_selection()
+			_tree.accept_event()
+			return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			var c := _divider_at(event.position)
@@ -1232,6 +1254,39 @@ func _set_userdata(rec: Variant, field: String, value: Variant) -> void:
 
 func _set_tags(rec: Variant, text: String) -> void:
 	_set_userdata(rec, "tags", text.strip_edges())
+
+
+# --- spreadsheet-style Tags copy/paste (via the OS clipboard) ---------------
+func _copy_selected_tags() -> void:
+	var it := _tree.get_selected()
+	if it == null:
+		return
+	var rec: Variant = it.get_metadata(0)
+	var t := _get_tags(rec) if typeof(rec) == TYPE_DICTIONARY else ""
+	DisplayServer.clipboard_set(t)
+	_status_label.text = "Copied tags: \"%s\"  (Ctrl+V to paste onto selected rows)" % t
+
+
+# Paste the clipboard into the Tags cell of every selected row (one cell or a
+# Shift/Ctrl range). Uses the OS clipboard, so text from Excel works too.
+func _paste_tags_to_selection() -> void:
+	var t := DisplayServer.clipboard_get().strip_edges()
+	var it := _tree.get_next_selected(null)
+	if it == null:
+		return
+	var n := 0
+	while it != null:
+		var rec: Variant = it.get_metadata(0)
+		if typeof(rec) == TYPE_DICTIONARY:
+			var ud: Dictionary = _userdata.get(String(rec.get("path", "")), {})
+			ud["tags"] = t
+			_userdata[String(rec.get("path", ""))] = ud
+			it.set_text(COL_TAGS, t)
+			n += 1
+		it = _tree.get_next_selected(it)
+	if n > 0:
+		_save_userdata()
+	_status_label.text = "Pasted tags to %d cell%s." % [n, "" if n == 1 else "s"]
 
 
 func _apply_rating(rec: Variant, it: TreeItem, rating: int) -> void:
@@ -1599,8 +1654,27 @@ func _chop_finished() -> void:
 	# chop.py already added the new files to index.json; merge them into the live
 	# list so they show now (no full re-scan, no restart).
 	var recs: Array = d.get("records", [])
+	var ptags := _get_tags(_an_rec) if typeof(_an_rec) == TYPE_DICTIONARY else ""
+	_inherit_tags_to(recs, ptags)            # chops inherit the parent's tags
 	_merge_new_records(recs)
-	_an_status.text = "Chopped into %d pieces — added to the library (original kept)." % recs.size()
+	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
+	_an_status.text = "Chopped into %d pieces — added to the library (original kept).%s" % [
+		recs.size(), tag_note]
+
+
+# Give each new record (e.g. fresh chops) the parent's tags in userdata, keyed by
+# their own paths, so they carry your keywords from the moment they appear.
+func _inherit_tags_to(recs: Array, tags: String) -> void:
+	if tags.strip_edges() == "":
+		return
+	for r in recs:
+		if typeof(r) != TYPE_DICTIONARY:
+			continue
+		var key := String(r.get("path", ""))
+		var ud: Dictionary = _userdata.get(key, {})
+		ud["tags"] = tags
+		_userdata[key] = ud
+	_save_userdata()
 
 
 # Insert/replace records (e.g. fresh chops) into _all by path, then refresh the

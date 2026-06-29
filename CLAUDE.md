@@ -82,8 +82,15 @@ for non-obvious gotchas.
   via `_merge_new_records` so the chops appear immediately (no restart, no
   re-scan). "Play chops" (`_play_chops`/`_build_chops_stream`) auditions the
   pieces with 1 s silence between them as one in-memory AudioStreamWAV (8/16-bit).
-- Chops are first-class files at once (play, tag, re-chop). Tag content is NOT
-  inherited — you tag chops yourself. Never auto-chop.
+- Chops are first-class files at once (play, tag, re-chop) and INHERIT the
+  parent's tags (`_inherit_tags_to` writes userdata for each new path before the
+  merge/refresh). Never auto-chop.
+- Tags column is spreadsheet-like: Tree is `SELECT_MULTI` (cell select; Shift/
+  Ctrl range). Ctrl+C copies the selected row's tags to the OS clipboard
+  (`_copy_selected_tags`); Ctrl+V pastes onto every selected row's Tags cell
+  (`_paste_tags_to_selection`) — handled in `_on_tree_gui_input`. `multi_selected`
+  drives per-selection refresh (item_selected doesn't fire in SELECT_MULTI);
+  autoplay is suppressed while Shift/Ctrl is held.
 
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)

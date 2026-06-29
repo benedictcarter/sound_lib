@@ -111,8 +111,8 @@ counts them and previews where it would chop.
   original** (the original is **kept**), preserving bit depth. It chops exactly
   the pieces shown (the blue boundaries), then **adds the new files to the
   library immediately** (incrementally — no full re-scan, no restart). They
-  inherit the parent's bundle/library/supplier, so you can play, rate, tag, and
-  even chop *them* straight away like any other file.
+  inherit the parent's bundle/library/supplier **and your tags**, so you can
+  play, rate, retag, and even chop *them* straight away like any other file.
 
 Detection lives in `indexer/gaps.py` and is mirrored in the app (GDScript) so
 the sliders respond instantly. `analysis.json` / `chopping.json` (in the library
@@ -120,6 +120,9 @@ root) store the counts and chop params.
 - **Tags** — your own keywords per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
   included in the search box, so you can find files by your own tags.
+  Spreadsheet-style copy/paste: click a Tags cell and **Ctrl+C** to copy, select
+  one cell or a **Shift/Ctrl range** of rows and **Ctrl+V** to paste the same
+  tags onto all of them (uses the OS clipboard, so Excel text works too).
 - **Plays** — auto-increments each time a track plays through to the end
   ("finished listening"); stopping early does not count. Sortable.
 - **Keyword panel** (right side) — keywords mined from filenames + library
