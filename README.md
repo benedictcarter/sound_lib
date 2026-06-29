@@ -120,11 +120,13 @@ root) store the counts and chop params.
 - **Tags** — your own keywords per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
   included in the search box, so you can find files by your own tags.
-  Spreadsheet-style selection + copy/paste: **drag** to select a range;
-  **Shift+drag** adds another range to the selection; **Ctrl+drag** (or
-  Ctrl+click) toggles cells (Ctrl over an already-selected cell deselects it).
-  **Ctrl+C** copies the selected row's tags, **Ctrl+V** pastes them onto every
-  selected row (uses the OS clipboard, so Excel text works too).
+  Spreadsheet-style selection + editing: **drag** to select a range;
+  **Shift+drag** adds another range; **Ctrl+drag** (or Ctrl+click) toggles cells
+  (Ctrl over an already-selected cell deselects it). With Tags cells selected:
+  **Ctrl+C** copies / **Ctrl+V** pastes (via the OS clipboard, so Excel works
+  too); **Del** clears them; and just **start typing** to overwrite all selected
+  cells at once — **Enter** or click away to apply (and deselect), **Esc** to
+  cancel.
 - **Plays** — auto-increments each time a track plays through to the end
   ("finished listening"); stopping early does not count. Sortable.
 - **Keyword panel** (right side) — keywords mined from filenames + library
