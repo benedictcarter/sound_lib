@@ -72,14 +72,18 @@ for non-obvious gotchas.
   peak-relative threshold (a loud transient lifts a relative threshold into the
   ambient bed and explodes false-gap counts). See LESSONS_LEARNT.md.
 - `indexer/chop.py <audio> <spec.json> <result.json>` — writes each piece (given
-  as `segments_s` boundaries in seconds) as `<stem>_chopped_NNN<ext>` BESIDE the
-  original via soundfile (keeps 24-bit/subtype). NEVER deletes the original. App:
-  "Chop to files" button (`_chop_selected`) chops the analysed file at the exact
-  segments shown (blue lines) in a thread; re-index to surface the new files.
-  "Play chops" (`_play_chops`/`_build_chops_stream`) auditions the pieces with
-  1 s silence between them as one in-memory AudioStreamWAV (8/16-bit PCM only).
-- Chops are first-class files after re-indexing (tag them, chop them again). Tag
-  INHERITANCE is intentionally NOT done — you tag chops yourself. Never auto-chop.
+  as `segments_s` in seconds + parent metadata) as `<stem>_chopped_NNN<ext>`
+  BESIDE the original via soundfile (keeps 24-bit/subtype). NEVER deletes the
+  original. It then ADDS only the new chops to `app/index.json` incrementally
+  (reuses `index.parse_wav`, inherits parent bundle/library/supplier/url; no
+  re-scan) and returns the new records. App "Chop to files" button
+  (`_chop_selected`) chops the analysed file at the exact segments shown (blue
+  lines) in a thread; `_chop_finished` merges the returned records into `_all`
+  via `_merge_new_records` so the chops appear immediately (no restart, no
+  re-scan). "Play chops" (`_play_chops`/`_build_chops_stream`) auditions the
+  pieces with 1 s silence between them as one in-memory AudioStreamWAV (8/16-bit).
+- Chops are first-class files at once (play, tag, re-chop). Tag content is NOT
+  inherited — you tag chops yourself. Never auto-chop.
 
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)

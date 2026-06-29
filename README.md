@@ -109,8 +109,10 @@ counts them and previews where it would chop.
   between them**, so the chop boundaries are audibly obvious.
 - **Chop to files** writes each piece as `<name>_chopped_NNN.wav` **next to the
   original** (the original is **kept**), preserving bit depth. It chops exactly
-  the pieces shown (the blue boundaries). Re-run the indexer to see the new
-  files — then you can play, rate, tag, and even chop *them* like any other file.
+  the pieces shown (the blue boundaries), then **adds the new files to the
+  library immediately** (incrementally — no full re-scan, no restart). They
+  inherit the parent's bundle/library/supplier, so you can play, rate, tag, and
+  even chop *them* straight away like any other file.
 
 Detection lives in `indexer/gaps.py` and is mirrored in the app (GDScript) so
 the sliders respond instantly. `analysis.json` / `chopping.json` (in the library

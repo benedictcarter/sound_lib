@@ -1549,11 +1549,18 @@ func _chop_selected() -> void:
 	var segs_s: Array = []
 	for s in _graph.segments:
 		segs_s.append([float(s[0]) * _an_frame_s, float(s[1]) * _an_frame_s])
+	# chops inherit the parent's library/supplier/bundle/url in the index
+	var parent := {
+		"bundle": _an_rec.get("bundle", ""),
+		"library": _an_rec.get("library", ""),
+		"supplier": _an_rec.get("supplier", ""),
+		"url": _an_rec.get("url", ""),
+	}
 	var f := FileAccess.open(_chop_spec_path, FileAccess.WRITE)
 	if f == null:
 		_an_status.text = "Could not write chop spec."
 		return
-	f.store_string(JSON.stringify({"segments_s": segs_s}))
+	f.store_string(JSON.stringify({"segments_s": segs_s, "parent": parent}))
 	f.close()
 	if FileAccess.file_exists(_chop_result_path):
 		DirAccess.remove_absolute(_chop_result_path)
@@ -1589,7 +1596,30 @@ func _chop_finished() -> void:
 	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
 		_an_status.text = "Chop error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
 		return
-	_an_status.text = "Wrote %d chops next to the original (kept). Re-run the indexer to see them." % int(d.get("count", 0))
+	# chop.py already added the new files to index.json; merge them into the live
+	# list so they show now (no full re-scan, no restart).
+	var recs: Array = d.get("records", [])
+	_merge_new_records(recs)
+	_an_status.text = "Chopped into %d pieces — added to the library (original kept)." % recs.size()
+
+
+# Insert/replace records (e.g. fresh chops) into _all by path, then refresh the
+# view so they appear immediately.
+func _merge_new_records(recs: Array) -> void:
+	if recs.is_empty():
+		return
+	var by_path := {}
+	for i in _all.size():
+		by_path[String(_all[i].get("path", ""))] = i
+	for r in recs:
+		if typeof(r) != TYPE_DICTIONARY:
+			continue
+		var rp := String(r.get("path", ""))
+		if by_path.has(rp):
+			_all[by_path[rp]] = r
+		else:
+			_all.append(r)
+	_apply()                  # re-filter + repopulate so the chops are visible now
 
 
 func _update_param_labels() -> void:
