@@ -87,10 +87,14 @@ for non-obvious gotchas.
   `{"continuous": true}` (blank chop columns, nothing to chop). Incremental by
   size+params. Reads all audio so a full run is slow. NEVER auto-chops.
 - App: clicking a row auto-runs the analyser (`_an_debounce` -> `_auto_analyse`)
-  and shows the picture; WaveGraph paints kept sounds GREEN, dead-space (cut)
-  BLACK, the per-piece chop start/stop boundaries BLUE, and the threshold dB
-  value by the orange line. CLICK/DRAG the graph to set the silence threshold
-  (`WaveGraph.threshold_picked` -> `_on_graph_threshold_picked`; `_db_at_y`).
+  and shows the picture. WaveGraph paints, per envelope bar, the part ABOVE the
+  chop threshold GREEN (sound) and BELOW it GREY (treated as silence) — so the
+  chop dB level reads as the green/grey boundary; dead-space (cut) stays BLACK,
+  per-piece chop boundaries BLUE, threshold dB by the orange line. The graph is
+  also the seek surface: LEFT-click = seek (`seek_requested` -> `_on_graph_seek`)
+  AND set the chop dB (`threshold_picked` -> `_on_graph_threshold_picked`);
+  LEFT-drag = scrub only; RIGHT-click/drag = set chop dB only. Play dot rides the
+  foot of the white cursor line (same x => aligned). `_db_at_y`/`_frac_at_x`.
   Chop columns: "Chop dB"/"Chop gap"/"Min snd" editable (mirror the three
   analyser sliders), "Chop pieces" read-only (= stored `chops`; continuous files
   show 1). `_apply_chop_cells`/`_on_chop_edited`. A USER param change persists to

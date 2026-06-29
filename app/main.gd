@@ -106,23 +106,25 @@ class WaveGraph extends Control:
 	func _frac_at_x(x: float) -> float:
 		return clampf(x / maxf(size.x, 1.0), 0.0, 1.0)
 
-	# Left button = scrub playback to that horizontal position; right button = set
-	# the silence threshold from the vertical position. Both work on click + drag.
+	# Left CLICK = scrub playback (x) AND set the chop dB level (y), both at once.
+	# Left DRAG = scrub only (so a horizontal scrub doesn't wobble the threshold).
+	# Right click/drag = set the chop dB level only.
 	func _gui_input(event: InputEvent) -> void:
-		var left := false
-		var right := false
 		if event is InputEventMouseButton and event.pressed:
-			left = event.button_index == MOUSE_BUTTON_LEFT
-			right = event.button_index == MOUSE_BUTTON_RIGHT
+			if event.button_index == MOUSE_BUTTON_LEFT:
+				seek_requested.emit(_frac_at_x(event.position.x))
+				threshold_picked.emit(_db_at_y(event.position.y))
+				accept_event()
+			elif event.button_index == MOUSE_BUTTON_RIGHT:
+				threshold_picked.emit(_db_at_y(event.position.y))
+				accept_event()
 		elif event is InputEventMouseMotion:
-			left = (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
-			right = (event.button_mask & MOUSE_BUTTON_MASK_RIGHT) != 0
-		if left:
-			seek_requested.emit(_frac_at_x(event.position.x))
-			accept_event()
-		elif right:
-			threshold_picked.emit(_db_at_y(event.position.y))
-			accept_event()
+			if (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+				seek_requested.emit(_frac_at_x(event.position.x))
+				accept_event()
+			elif (event.button_mask & MOUSE_BUTTON_MASK_RIGHT) != 0:
+				threshold_picked.emit(_db_at_y(event.position.y))
+				accept_event()
 
 	# Dead space (what the chopper cuts) is black; kept sounds are green.
 	func _draw() -> void:
@@ -135,15 +137,22 @@ class WaveGraph extends Control:
 				"Select a WAV to preview its sounds (green) and dead space (black)",
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.5, 0.5, 0.55))
 			return
-		# Draw the loudness envelope only inside kept segments; gaps stay black.
-		# With no segments yet (pre-detection) the whole file reads as one sound.
+		# Envelope inside kept segments (gaps stay black). Each bar is split at the
+		# chop threshold: the part ABOVE the chop level is green (real sound), the
+		# part BELOW it is grey (what's treated as silence) — so the chop dB level
+		# is visible across the whole graph as the green/grey boundary.
 		var has_segs := segments.size() > 0
-		var col := Color(0.30, 0.85, 0.45)
+		var green := Color(0.30, 0.85, 0.45)
+		var grey := Color(0.42, 0.42, 0.48)
+		var th_y := _yfor(threshold_db)
 		for x in int(w):
 			var fi := mini(int(float(x) / w * n), n - 1)
 			if has_segs and not _frame_in_segment(fi):
 				continue                                   # dead space -> leave black
-			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), col, 1.0)
+			var lvl_y := _yfor(levels[fi])
+			draw_line(Vector2(x, h), Vector2(x, maxf(lvl_y, th_y)), grey, 1.0)   # below chop level
+			if lvl_y < th_y:
+				draw_line(Vector2(x, th_y), Vector2(x, lvl_y), green, 1.0)       # above it
 		# chop boundaries: start + end of every kept piece, in blue
 		if has_segs:
 			var bcol := Color(0.30, 0.62, 1.0, 0.9)
@@ -704,7 +713,8 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_graph = WaveGraph.new()
 	_graph.custom_minimum_size = Vector2(0, 120)
 	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_graph.tooltip_text = "Left-click/drag to scrub playback; right-click/drag to set the silence threshold."
+	_graph.tooltip_text = "Left-click: seek + set the chop dB level (grey = below it). " \
+		+ "Left-drag: scrub. Right-click/drag: set the chop dB only."
 	_graph.threshold_picked.connect(_on_graph_threshold_picked)
 	_graph.seek_requested.connect(_on_graph_seek)
 	root.add_child(_graph)
