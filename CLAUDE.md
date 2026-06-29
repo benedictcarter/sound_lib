@@ -158,5 +158,6 @@ for non-obvious gotchas.
 - Combined analysis (what the app runs): `py indexer/analyse_audio.py`  (chops + loudness, one read/file)
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
+- Run the Python tests: `py -m pytest`  (golden tests in `indexer/tests/`)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`
