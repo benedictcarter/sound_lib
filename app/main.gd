@@ -18,23 +18,24 @@ const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
 const COL_SOUNDS := 11  # analysis: detected sound count (analysis.json)
 const COL_CHOP_DB := 12 # suggested/edited chop silence threshold (chopping.json)
 const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
-const COL_CHOP_N := 14  # resulting chop pieces at those settings (chopping.json)
-const COL_TAGS := 15    # user data (your own keywords; editable inline)
-const COL_COUNT := 16
+const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
+const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
+const COL_TAGS := 16    # user data (your own keywords; editable inline)
+const COL_COUNT := 17
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
-	"Chop dB", "Chop gap", "Chop pieces", "Tags",
+	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags",
 ]
 # Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
-# Chop dB/gap/pieces and Tags are special-cased in _sort_value (not in record).
+# Chop dB/gap/snd/pieces and Tags are special-cased in _sort_value (not in record).
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
-	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_N]
+	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N]
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -57,7 +58,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 80, 200]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -800,6 +801,8 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _chop_db_val(rec)
 	if col == COL_CHOP_GAP:
 		return _chop_gap_val(rec)
+	if col == COL_CHOP_SND:
+		return _chop_snd_val(rec)
 	if col == COL_CHOP_N:
 		return _chop_n_val(rec)
 	if col == COL_TAGS:
@@ -866,7 +869,7 @@ func _populate_tree() -> void:
 		_apply_userdata_cells(it, rec)
 		_apply_chop_cells(it, rec)
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
-				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_N]:
+				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
@@ -914,7 +917,7 @@ func _auto_analyse() -> void:
 func _on_row_activated() -> void:
 	# Double-click plays -- except on the editable Rating/Tags/Chop cells, where
 	# a double-click opens the editor / sets a rating instead of playing.
-	if _last_click_col in [COL_RATING, COL_TAGS, COL_CHOP_DB, COL_CHOP_GAP]:
+	if _last_click_col in [COL_RATING, COL_TAGS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND]:
 		return
 	_play_selected()
 
@@ -932,7 +935,7 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		elif mouse_btn == MOUSE_BUTTON_LEFT:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
-	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP:
+	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND:
 		return                                 # let the inline editor handle it
 	if mouse_btn == MOUSE_BUTTON_LEFT and _autoplay.button_pressed:
 		_play_selected()
@@ -946,7 +949,7 @@ func _on_tree_item_edited() -> void:
 	var rec: Variant = it.get_metadata(0)
 	if col == COL_TAGS:
 		_set_tags(rec, it.get_text(COL_TAGS))
-	elif col == COL_CHOP_DB or col == COL_CHOP_GAP:
+	elif col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND:
 		_on_chop_edited(rec, it, col)
 
 
@@ -1290,6 +1293,11 @@ func _chop_gap_val(rec: Dictionary) -> float:
 	return float(c.get("min_gap_s", -1.0)) if typeof(c) == TYPE_DICTIONARY and c.has("silence_db") else -1.0
 
 
+func _chop_snd_val(rec: Dictionary) -> float:
+	var c: Variant = _get_chop(rec)
+	return float(c.get("min_sound_s", -1.0)) if typeof(c) == TYPE_DICTIONARY and c.has("silence_db") else -1.0
+
+
 func _chop_n_val(rec: Dictionary) -> int:
 	var c: Variant = _get_chop(rec)
 	return int(c.get("chops", -1)) if typeof(c) == TYPE_DICTIONARY and c.has("chops") else -1
@@ -1299,21 +1307,27 @@ func _apply_chop_cells(it: TreeItem, rec: Dictionary) -> void:
 	var c: Variant = _get_chop(rec)
 	var db_txt := ""
 	var gap_txt := ""
+	var snd_txt := ""
 	var n_txt := ""
 	if typeof(c) == TYPE_DICTIONARY:
 		if c.has("silence_db"):
 			db_txt = "%d" % int(round(float(c["silence_db"])))
 			gap_txt = "%.1f" % float(c.get("min_gap_s", DEF_MIN_GAP_S))
+			snd_txt = "%.2f" % float(c.get("min_sound_s", DEF_MIN_SOUND_S))
 		if c.has("chops"):
 			n_txt = str(int(c["chops"]))      # continuous files report 1 piece
 	it.set_text(COL_CHOP_DB, db_txt)
 	it.set_text(COL_CHOP_GAP, gap_txt)
+	it.set_text(COL_CHOP_SND, snd_txt)
 	it.set_text(COL_CHOP_N, n_txt)
 	it.set_editable(COL_CHOP_DB, true)
 	it.set_editable(COL_CHOP_GAP, true)
+	it.set_editable(COL_CHOP_SND, true)
 	it.set_tooltip_text(COL_CHOP_DB,
 		"Chop silence threshold (dBFS). Blank = continuous, no chop. Double-click to edit.")
 	it.set_tooltip_text(COL_CHOP_GAP, "Chop min-gap (s). Double-click to edit.")
+	it.set_tooltip_text(COL_CHOP_SND,
+		"Min sound (s): drop pieces shorter than this. 0 = keep all. Double-click to edit.")
 	it.set_tooltip_text(COL_CHOP_N, "Pieces this file chops into at its settings (run/edit to fill).")
 
 
@@ -1336,13 +1350,16 @@ func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
 	c.erase("continuous")
 	if col == COL_CHOP_DB:
 		c["silence_db"] = clampf(_parse_float(it.get_text(col), c["silence_db"]), -90.0, 0.0)
-	else:
+	elif col == COL_CHOP_GAP:
 		c["min_gap_s"] = clampf(_parse_float(it.get_text(col), c["min_gap_s"]), 0.0, 10.0)
+	else:  # COL_CHOP_SND
+		c["min_sound_s"] = clampf(_parse_float(it.get_text(col), c.get("min_sound_s", DEF_MIN_SOUND_S)), 0.0, 10.0)
 	_chopping[key] = c
 	# Live recount when this is the analysed file (we have its envelope cached).
 	if rec == _an_rec and not _an_levels.is_empty():
 		_sil_slider.set_value_no_signal(c["silence_db"])
 		_gap_slider.set_value_no_signal(c["min_gap_s"])
+		_snd_slider.set_value_no_signal(c.get("min_sound_s", DEF_MIN_SOUND_S))
 		_update_param_labels()
 		_on_param_changed()
 		c["chops"] = _graph.segments.size()

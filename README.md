@@ -98,9 +98,10 @@ counts them and previews where it would chop.
   `py indexer/suggest_chops.py`.) Both write `chopping.json` beside the audio.
 - Files it judges **continuous** get no settings (blank columns — nothing to
   chop).
-- **Chop dB** / **Chop gap** are **editable**: double-click to refine the
-  silence threshold or min-gap for a file. **Chop pieces** (read-only) shows how
-  many pieces the file chops into at those settings (continuous = 1; blank until
+- **Chop dB** / **Chop gap** / **Min snd** are **editable**: double-click to
+  refine the silence threshold, min-gap, or min-sound for a file (the same three
+  knobs as the analyser sliders). **Chop pieces** (read-only) shows how many
+  pieces the file chops into at those settings (continuous = 1; blank until
   analysed). Editing the file currently in the analyser recounts live. Chopping
   itself is a separate, manual step.
 

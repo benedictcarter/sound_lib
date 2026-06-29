@@ -59,9 +59,9 @@ for non-obvious gotchas.
   BLACK, the per-piece chop start/stop boundaries BLUE, and the threshold dB
   value by the orange line. CLICK/DRAG the graph to set the silence threshold
   (`WaveGraph.threshold_picked` -> `_on_graph_threshold_picked`; `_db_at_y`).
-  Three chop columns: "Chop dB"/"Chop gap" editable, "Chop pieces" read-only
-  (= stored `chops`; continuous files show 1). `_apply_chop_cells`/
-  `_on_chop_edited`. A USER threshold/gap change (slider or graph) persists to
+  Chop columns: "Chop dB"/"Chop gap"/"Min snd" editable (mirror the three
+  analyser sliders), "Chop pieces" read-only (= stored `chops`; continuous files
+  show 1). `_apply_chop_cells`/`_on_chop_edited`. A USER param change persists to
   `chopping.json` for the analysed file via `_on_user_param_changed` ->
   `_persist_analysed_chop` (disk write debounced by `_chop_save_debounce`);
   auto-load uses `_on_param_changed` and does NOT persist (browsing ≠ writing).
