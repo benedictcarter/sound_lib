@@ -244,6 +244,12 @@ var _resize_start_w: int = 0
 var _header_h: float = 0.0           # measured header (title row) height, cached
 var _suppress_title_click: bool = false
 
+# drag-to-select a range of rows (Excel-style; SELECT_MULTI has no native drag)
+var _drag_sel: bool = false
+var _drag_anchor: TreeItem = null
+var _drag_last: TreeItem = null
+var _drag_col: int = 0
+
 var _debounce: Timer
 var _an_debounce: Timer        # auto-analyse the selected row after a short pause
 var _chop_save_debounce: Timer # coalesce chopping.json writes during a live drag
@@ -1033,9 +1039,22 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 				_resize_start_x = event.position.x
 				_resize_start_w = _col_w[c]
 				_tree.accept_event()
-		elif _resize_col >= 0:
-			_resize_col = -1
-			_tree.accept_event()
+			elif event.position.y > _header_height():
+				# remember the press as a potential drag-select anchor (a plain
+				# click still works; range select only starts once you move)
+				var it := _tree.get_item_at_position(event.position)
+				if it != null:
+					_drag_sel = true
+					_drag_anchor = it
+					_drag_last = it
+					_drag_col = maxi(0, _tree.get_column_at_position(event.position))
+		else:                                  # released
+			if _resize_col >= 0:
+				_resize_col = -1
+				_tree.accept_event()
+			_drag_sel = false
+			_drag_anchor = null
+			_drag_last = null
 	elif event is InputEventMouseMotion:
 		if _resize_col >= 0:
 			var w := maxi(COL_MIN_W, _resize_start_w + int(event.position.x - _resize_start_x))
@@ -1043,11 +1062,37 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 			_tree.set_column_custom_minimum_width(_resize_col, w)
 			_suppress_title_click = true       # this drag isn't a sort click
 			_tree.accept_event()
+		elif _drag_sel and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+			var it := _tree.get_item_at_position(event.position)
+			if it != null and it != _drag_last and _drag_anchor != null:
+				_drag_last = it
+				_select_row_range(_drag_anchor, it, _drag_col)
+				_tree.accept_event()
 		else:
 			# show the horizontal-resize cursor when hovering a divider
 			_tree.mouse_default_cursor_shape = (
 				Control.CURSOR_HSIZE if _divider_at(event.position) >= 0
 				else Control.CURSOR_ARROW)
+
+
+# Select every row between two items (inclusive) at the given column, for an
+# Excel-style click-drag range. Programmatic select() is silent (no signal).
+func _select_row_range(a: TreeItem, b: TreeItem, col: int) -> void:
+	_tree.deselect_all()
+	var root := _tree.get_root()
+	if root == null:
+		return
+	var inside := false
+	var it := root.get_first_child()
+	while it != null:
+		if it == a or it == b:
+			it.select(col)
+			if a == b or inside:
+				break                          # second endpoint reached -> done
+			inside = true
+		elif inside:
+			it.select(col)
+		it = it.get_next()
 
 
 ## Which star (1-5) the x position falls on, measured against the actual drawn
