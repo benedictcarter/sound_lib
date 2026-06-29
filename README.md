@@ -122,13 +122,13 @@ root) store the counts and chop params.
 - **Tags** — your own keywords per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
   included in the search box, so you can find files by your own tags.
-  Spreadsheet-style selection + editing: **drag** to select a range;
+  Spreadsheet-style selection + editing works on the **Tags** and **Vol×**
+  columns (whichever your selected cells are in): **drag** to select a range;
   **Shift+drag** adds another range; **Ctrl+drag** (or Ctrl+click) toggles cells
-  (Ctrl over an already-selected cell deselects it). With Tags cells selected:
-  **Ctrl+C** copies / **Ctrl+V** pastes (via the OS clipboard, so Excel works
-  too); **Del** clears them; and just **start typing** to overwrite all selected
-  cells at once — **Enter** or click away to apply (and deselect), **Esc** to
-  cancel.
+  (Ctrl over an already-selected cell deselects it). Then **Ctrl+C** copies /
+  **Ctrl+V** pastes (via the OS clipboard, so Excel works too); **Del** clears;
+  and just **start typing** to overwrite all selected cells at once — **Enter**
+  or click away to apply (and deselect), **Esc** to cancel.
 - **Plays** — auto-increments each time a track plays through to the end
   ("finished listening"); stopping early does not count. Sortable.
 - **Vol×** — a per-track playback gain multiplier (double-click to edit; must be

@@ -104,13 +104,17 @@ for non-obvious gotchas.
   native modifier behaviour is suppressed) then `_apply_drag_range` rebuilds:
   deselect_all -> restore base -> add/toggle `_rows_between(a,b)`. Plain drag
   doesn't accept on press, so a normal click still single-selects/plays.
-  With Tags cells selected (`_selected_tag_items`/`_tags_selected`): Ctrl+C
-  copies the selected row's tags to the OS clipboard (`_copy_selected_tags`),
-  Ctrl+V pastes onto every selected row (`_paste_tags_to_selection`), Del clears
-  (`_clear_selected_tags`), and a printable key starts a live "type over the
-  whole selection" edit (`_begin_tag_edit`/`_tag_edit_live`/`_commit_tag_edit`/
-  `_cancel_tag_edit` using `event.unicode`) — Enter or a click (or `focus_exited`)
-  commits + deselects, Esc cancels. All keys handled in `_on_tree_gui_input`.
+  Multi-cell editing is GENERIC over the selected editable column (`SEL_EDIT_COLS`
+  = Tags, Vol×), NOT hard-wired to Tags — `_selected_edit_col` picks the column
+  your selected cells are in, and `_cell_get`/`_cell_set` are the per-column
+  value adapters (Vol× validates >0, lives in userdata; easy to add more cols).
+  Ctrl+C copies the active cell (`_copy_selected_cells`), Ctrl+V pastes onto every
+  selected cell (`_paste_to_selection`), Del clears (`_clear_selected_cells`), and
+  a printable key starts a live "type over the selection" edit (`_begin_cell_edit`
+  /`_cell_edit_live`/`_commit_cell_edit`/`_cancel_cell_edit` using `event.unicode`,
+  `_cell_edit_col` tracks the target column) — Enter/click/`focus_exited` commits +
+  deselects, Esc cancels. All keys handled in `_on_tree_gui_input`. (Chop columns
+  stay single-cell double-click edits, not in SEL_EDIT_COLS.)
   `multi_selected` drives per-selection refresh (item_selected doesn't fire in
   SELECT_MULTI); autoplay is suppressed while Shift/Ctrl is held.
 

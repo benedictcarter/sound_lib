@@ -38,6 +38,9 @@ const COL_FIELD := [
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
 	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 	COL_VOL_MULT]
+# Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
+# across a selection). Driven by the SELECTED column, not hard-wired to Tags.
+const SEL_EDIT_COLS := [COL_TAGS, COL_VOL_MULT]
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -260,11 +263,12 @@ var _drag_toggle: bool = false       # Ctrl: flip cells in the region instead of
 var _drag_base: Array = []           # [[item, col], ...] selection before this drag
 var _drag_base_col: Dictionary = {}  # item -> selected column, for fast toggle lookup
 
-# type-into-a-selection (overwrite the Tags cells of every selected row at once)
-var _tag_edit_active: bool = false
-var _tag_edit_buf: String = ""
-var _tag_edit_items: Array = []      # the TreeItems being edited
-var _tag_edit_orig: Dictionary = {}  # item -> original tag text (for Esc cancel)
+# type-into-a-selection: overwrite an editable column's cells across the selection
+var _cell_edit_active: bool = false
+var _cell_edit_col: int = -1
+var _cell_edit_buf: String = ""
+var _cell_edit_items: Array = []     # the TreeItems being edited
+var _cell_edit_orig: Dictionary = {} # item -> original cell text (for Esc cancel)
 
 var _debounce: Timer
 var _an_debounce: Timer        # auto-analyse the selected row after a short pause
@@ -380,7 +384,7 @@ func _build_ui() -> void:
 	_tree.item_mouse_selected.connect(_on_tree_mouse_selected)
 	_tree.item_edited.connect(_on_tree_item_edited)
 	_tree.gui_input.connect(_on_tree_gui_input)
-	_tree.focus_exited.connect(_commit_tag_edit)   # clicking away commits a type-over
+	_tree.focus_exited.connect(_commit_cell_edit)   # clicking away commits a type-over
 
 	# --- table + keyword panel (split) ----------------------------------
 	var split := HSplitContainer.new()
@@ -1054,50 +1058,52 @@ func _divider_at(pos: Vector2) -> int:
 
 
 func _on_tree_gui_input(event: InputEvent) -> void:
-	# Spreadsheet-style Tags keys. Only fire when the tree has focus and no inline
-	# cell editor is open (that LineEdit would grab the keys itself).
+	# Spreadsheet-style cell keys (on the SELECTED editable column). Only fire when
+	# the tree has focus and no inline cell editor is open (that LineEdit grabs keys).
 	if event is InputEventKey and event.pressed:
 		# 1) an active "type over the selection" edit captures everything
-		if _tag_edit_active:
+		if _cell_edit_active:
 			if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
-				_commit_tag_edit()
+				_commit_cell_edit()
 			elif event.keycode == KEY_ESCAPE:
-				_cancel_tag_edit()
+				_cancel_cell_edit()
 			elif event.keycode == KEY_BACKSPACE:
-				_tag_edit_buf = _tag_edit_buf.substr(0, maxi(0, _tag_edit_buf.length() - 1))
-				_tag_edit_live()
+				_cell_edit_buf = _cell_edit_buf.substr(0, maxi(0, _cell_edit_buf.length() - 1))
+				_cell_edit_live()
 			elif event.keycode == KEY_DELETE:
-				_tag_edit_buf = ""
-				_tag_edit_live()
+				_cell_edit_buf = ""
+				_cell_edit_live()
 			elif event.unicode >= 32:
-				_tag_edit_buf += String.chr(event.unicode)
-				_tag_edit_live()
+				_cell_edit_buf += String.chr(event.unicode)
+				_cell_edit_live()
 			_tree.accept_event()
 			return
-		# 2) Ctrl+C / Ctrl+V copy-paste
+		# 2) Ctrl+C / Ctrl+V copy-paste of the selected column
 		if event.ctrl_pressed:
 			if event.keycode == KEY_C:
-				_copy_selected_tags()
+				_copy_selected_cells()
 				_tree.accept_event()
 				return
 			elif event.keycode == KEY_V:
-				_paste_tags_to_selection()
+				_paste_to_selection()
 				_tree.accept_event()
 				return
-		# 3) Del clears the selected Tags cells; a printable key starts a
-		#    type-over edit of them. Both only when Tags cells are selected.
-		elif event.keycode == KEY_DELETE and _tags_selected():
-			_clear_selected_tags()
-			_tree.accept_event()
-			return
-		elif event.unicode >= 32 and _tags_selected():
-			_begin_tag_edit(String.chr(event.unicode))
-			_tree.accept_event()
-			return
+		# 3) Del clears the selected cells; a printable key starts a type-over
+		#    edit — both only when an editable column's cells are selected.
+		else:
+			var ecol := _selected_edit_col()
+			if event.keycode == KEY_DELETE and ecol >= 0:
+				_clear_selected_cells(ecol)
+				_tree.accept_event()
+				return
+			elif event.unicode >= 32 and ecol >= 0:
+				_begin_cell_edit(ecol, String.chr(event.unicode))
+				_tree.accept_event()
+				return
 	# Clicking anywhere commits an in-progress type-over edit (then the click
 	# proceeds normally to start a fresh selection).
-	if event is InputEventMouseButton and event.pressed and _tag_edit_active:
-		_commit_tag_edit()
+	if event is InputEventMouseButton and event.pressed and _cell_edit_active:
+		_commit_cell_edit()
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			var c := _divider_at(event.position)
@@ -1360,7 +1366,7 @@ func _on_reveal() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE:
 		var foc := get_viewport().gui_get_focus_owner()
-		if foc is LineEdit or foc is TextEdit or _tag_edit_active:
+		if foc is LineEdit or foc is TextEdit or _cell_edit_active:
 			return
 		_on_play_pressed()
 		get_viewport().set_input_as_handled()
@@ -1489,124 +1495,179 @@ func _set_tags(rec: Variant, text: String) -> void:
 	_set_userdata(rec, "tags", text.strip_edges())
 
 
-# --- spreadsheet-style Tags copy/paste (via the OS clipboard) ---------------
-func _copy_selected_tags() -> void:
-	var it := _tree.get_selected()
-	if it == null:
-		return
-	var rec: Variant = it.get_metadata(0)
-	var t := _get_tags(rec) if typeof(rec) == TYPE_DICTIONARY else ""
-	DisplayServer.clipboard_set(t)
-	_status_label.text = "Copied tags: \"%s\"  (Ctrl+V to paste onto selected rows)" % t
+# ===========================================================================
+#  Spreadsheet-style multi-cell editing — generic over the selected COLUMN
+#  (Tags, Vol×, ...), not hard-wired to Tags. Copy/paste/Del/type-over all act
+#  on whichever editable column your selected cells are in.
+# ===========================================================================
+
+# The editable column that the current selection sits in, or -1. (Selection is
+# per-cell at one column, so the first match wins.)
+func _selected_edit_col() -> int:
+	for c in SEL_EDIT_COLS:
+		var it := _tree.get_next_selected(null)
+		while it != null:
+			if it.is_selected(c):
+				return c
+			it = _tree.get_next_selected(it)
+	return -1
 
 
-# Paste the clipboard into the Tags cell of every selected row (one cell or a
-# Shift/Ctrl range). Uses the OS clipboard, so text from Excel works too.
-func _paste_tags_to_selection() -> void:
-	var t := DisplayServer.clipboard_get().strip_edges()
-	var it := _tree.get_next_selected(null)
-	if it == null:
-		return
-	var n := 0
-	while it != null:
-		var rec: Variant = it.get_metadata(0)
-		if typeof(rec) == TYPE_DICTIONARY:
-			var ud: Dictionary = _userdata.get(String(rec.get("path", "")), {})
-			ud["tags"] = t
-			_userdata[String(rec.get("path", ""))] = ud
-			it.set_text(COL_TAGS, t)
-			n += 1
-		it = _tree.get_next_selected(it)
-	if n > 0:
-		_save_userdata()
-	_status_label.text = "Pasted tags to %d cell%s." % [n, "" if n == 1 else "s"]
-
-
-# Selected rows whose Tags cell is part of the selection (the targets for Del and
-# type-over editing -- so editing only happens when you've picked Tags cells).
-func _selected_tag_items() -> Array:
+func _selected_items_in_col(col: int) -> Array:
 	var out: Array = []
 	var it := _tree.get_next_selected(null)
 	while it != null:
-		if it.is_selected(COL_TAGS) and typeof(it.get_metadata(0)) == TYPE_DICTIONARY:
+		if it.is_selected(col) and typeof(it.get_metadata(0)) == TYPE_DICTIONARY:
 			out.append(it)
 		it = _tree.get_next_selected(it)
 	return out
 
 
-func _tags_selected() -> bool:
-	return not _selected_tag_items().is_empty()
+# Current value of a cell as text, per column.
+func _cell_get(rec: Variant, col: int) -> String:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return ""
+	match col:
+		COL_TAGS:
+			return _get_tags(rec)
+		COL_VOL_MULT:
+			return _fmt_mult(_get_vol_mult(rec))
+	return ""
 
 
-# Write tags onto a set of rows (cells + userdata), saving once.
-func _write_tags(items: Array, text: String) -> int:
+# Validate + write a value to a cell (in memory + the cell text), per column.
+# Returns false (no change) if the value is invalid. Caller saves once after.
+func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
+	if typeof(rec) != TYPE_DICTIONARY:
+		return false
+	var key := String(rec.get("path", ""))
+	match col:
+		COL_TAGS:
+			var t := raw.strip_edges()
+			var ud: Dictionary = _userdata.get(key, {})
+			ud["tags"] = t
+			_userdata[key] = ud
+			it.set_text(COL_TAGS, t)
+			return true
+		COL_VOL_MULT:
+			var s := raw.strip_edges()
+			var v := 1.0 if s == "" else (s.to_float() if s.is_valid_float() else -1.0)
+			if v <= 0.0:
+				return false                        # must be > 0
+			var ud2: Dictionary = _userdata.get(key, {})
+			ud2["vol_mult"] = v
+			_userdata[key] = ud2
+			it.set_text(COL_VOL_MULT, _fmt_mult(v))
+			if rec == _playing_rec:                 # live-apply to the current track
+				_play_vol_mult = v
+				_apply_volume()
+			return true
+	return false
+
+
+# Persist after a bulk edit. Tags and Vol× both live in userdata.
+func _save_after_edit(_col: int) -> void:
+	_save_userdata()
+
+
+# --- copy / paste / clear (Ctrl+C, Ctrl+V, Del) -----------------------------
+func _copy_selected_cells() -> void:
+	var col := _selected_edit_col()
+	if col < 0:
+		return
+	var it := _tree.get_selected()
+	if it == null or not it.is_selected(col):
+		var items := _selected_items_in_col(col)
+		it = items[0] if not items.is_empty() else null
+	if it == null:
+		return
+	var val := _cell_get(it.get_metadata(0), col)
+	DisplayServer.clipboard_set(val)
+	_status_label.text = "Copied %s: \"%s\"" % [COL_TITLES[col], val]
+
+
+func _paste_to_selection() -> void:
+	var col := _selected_edit_col()
+	if col < 0:
+		return
+	var text := DisplayServer.clipboard_get().strip_edges()
+	var n := 0
+	for it in _selected_items_in_col(col):
+		if _cell_set(it.get_metadata(0), it, col, text):
+			n += 1
+	if n > 0:
+		_save_after_edit(col)
+	_status_label.text = "Pasted %s to %d cell%s." % [COL_TITLES[col], n, "" if n == 1 else "s"]
+
+
+func _clear_selected_cells(col: int) -> void:
+	var n := 0
+	for it in _selected_items_in_col(col):
+		if _cell_set(it.get_metadata(0), it, col, ""):
+			n += 1
+	if n > 0:
+		_save_after_edit(col)
+	_status_label.text = "Cleared %s on %d cell%s." % [COL_TITLES[col], n, "" if n == 1 else "s"]
+
+
+# --- type over a multi-cell selection (any editable column) -----------------
+func _begin_cell_edit(col: int, first: String) -> void:
+	_cell_edit_items = _selected_items_in_col(col)
+	if _cell_edit_items.is_empty():
+		return
+	_cell_edit_col = col
+	_cell_edit_orig = {}
+	for it in _cell_edit_items:
+		_cell_edit_orig[it] = it.get_text(col)
+	_cell_edit_active = true
+	_cell_edit_buf = first
+	_cell_edit_live()
+	_status_label.text = "Editing %d %s cell%s — type, Enter to apply, Esc to cancel" % [
+		_cell_edit_items.size(), COL_TITLES[col], "" if _cell_edit_items.size() == 1 else "s"]
+
+
+func _cell_edit_live() -> void:
+	for it in _cell_edit_items:
+		if is_instance_valid(it):
+			it.set_text(_cell_edit_col, _cell_edit_buf)
+
+
+func _commit_cell_edit() -> void:
+	if not _cell_edit_active:
+		return
+	var col := _cell_edit_col
+	var items := _cell_edit_items
+	var raw := _cell_edit_buf
+	var orig := _cell_edit_orig
+	_end_cell_edit()
 	var n := 0
 	for it in items:
 		if not is_instance_valid(it):
 			continue
-		var rec: Variant = it.get_metadata(0)
-		if typeof(rec) != TYPE_DICTIONARY:
-			continue
-		var ud: Dictionary = _userdata.get(String(rec.get("path", "")), {})
-		ud["tags"] = text
-		_userdata[String(rec.get("path", ""))] = ud
-		it.set_text(COL_TAGS, text)
-		n += 1
+		if _cell_set(it.get_metadata(0), it, col, raw):
+			n += 1
+		else:
+			it.set_text(col, String(orig.get(it, "")))   # revert invalid value
 	if n > 0:
-		_save_userdata()
-	return n
-
-
-func _clear_selected_tags() -> void:
-	var n := _write_tags(_selected_tag_items(), "")
-	_status_label.text = "Cleared tags on %d cell%s." % [n, "" if n == 1 else "s"]
-
-
-# --- type over a multi-cell Tags selection ----------------------------------
-func _begin_tag_edit(first: String) -> void:
-	_tag_edit_items = _selected_tag_items()
-	if _tag_edit_items.is_empty():
-		return
-	_tag_edit_orig = {}
-	for it in _tag_edit_items:
-		_tag_edit_orig[it] = it.get_text(COL_TAGS)
-	_tag_edit_active = true
-	_tag_edit_buf = first
-	_tag_edit_live()
-	_status_label.text = "Editing %d tag cell%s — type, Enter to apply, Esc to cancel" % [
-		_tag_edit_items.size(), "" if _tag_edit_items.size() == 1 else "s"]
-
-
-func _tag_edit_live() -> void:
-	for it in _tag_edit_items:
-		if is_instance_valid(it):
-			it.set_text(COL_TAGS, _tag_edit_buf)
-
-
-func _commit_tag_edit() -> void:
-	if not _tag_edit_active:
-		return
-	var items := _tag_edit_items
-	var text := _tag_edit_buf.strip_edges()
-	_end_tag_edit()
-	var n := _write_tags(items, text)
+		_save_after_edit(col)
 	_tree.deselect_all()
-	_status_label.text = "Set tags on %d cell%s." % [n, "" if n == 1 else "s"]
+	_status_label.text = "Set %s on %d cell%s." % [COL_TITLES[col], n, "" if n == 1 else "s"]
 
 
-func _cancel_tag_edit() -> void:
-	for it in _tag_edit_items:
+func _cancel_cell_edit() -> void:
+	for it in _cell_edit_items:
 		if is_instance_valid(it):
-			it.set_text(COL_TAGS, String(_tag_edit_orig.get(it, "")))
-	_end_tag_edit()
-	_status_label.text = "Tag edit cancelled."
+			it.set_text(_cell_edit_col, String(_cell_edit_orig.get(it, "")))
+	_end_cell_edit()
+	_status_label.text = "Edit cancelled."
 
 
-func _end_tag_edit() -> void:
-	_tag_edit_active = false
-	_tag_edit_buf = ""
-	_tag_edit_items = []
-	_tag_edit_orig = {}
+func _end_cell_edit() -> void:
+	_cell_edit_active = false
+	_cell_edit_col = -1
+	_cell_edit_buf = ""
+	_cell_edit_items = []
+	_cell_edit_orig = {}
 
 
 func _apply_rating(rec: Variant, it: TreeItem, rating: int) -> void:
