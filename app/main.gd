@@ -21,25 +21,27 @@ const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
 const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
 const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
 const COL_TAGS := 16    # user data (your own keywords; editable inline)
-const COL_LOUDNESS := 17 # measured integrated loudness, dBFS (loudness.json; read-only)
-const COL_LEVEL := 18   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
+const COL_LEVEL := 17   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
+const COL_LOUDNESS := 18 # measured integrated loudness "orig dB", dBFS (loudness.json; read-only)
 const COL_GAIN_DB := 19 # user data: per-track applied playback gain in dB
-const COL_COUNT := 20
+const COL_FINAL_DB := 20 # read-only: resulting loudness = orig dB + Gain dB
+const COL_COUNT := 21
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
-	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags", "Loudness", "Level", "Gain dB",
+	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags",
+	"tgt vol/Level", "orig dB", "Gain dB", "final dB",
 ]
 # Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
-# Chop dB/gap/snd/pieces, Tags, Loudness, Level and Gain dB are special-cased.
+# Chop dB/gap/snd/pieces, Tags, Level, orig dB, Gain dB and final dB are special-cased.
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
 	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
-	COL_LOUDNESS, COL_LEVEL, COL_GAIN_DB]
+	COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]
 # Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
 # across a selection). Driven by the SELECTED column, not hard-wired to Tags.
 const SEL_EDIT_COLS := [COL_TAGS, COL_LEVEL, COL_GAIN_DB]
@@ -70,7 +72,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200, 82, 66, 64]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -976,6 +978,9 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 	if col == COL_LOUDNESS:
 		var r := _loudness_rms(rec)
 		return r if not is_nan(r) else -999.0
+	if col == COL_FINAL_DB:
+		var f := _final_db(rec)
+		return f if not is_nan(f) else -999.0
 	return rec.get(COL_FIELD[col])
 
 
@@ -1040,7 +1045,7 @@ func _populate_tree() -> void:
 		_apply_loudness_cell(it, rec)
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
 				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
-				COL_LOUDNESS, COL_LEVEL, COL_GAIN_DB]:
+				COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		for c in EDITABLE_COLS:                 # tint editable cells a touch lighter
 			it.set_custom_bg_color(c, EDIT_CELL_BG)
@@ -1052,8 +1057,23 @@ func _apply_loudness_cell(it: TreeItem, rec: Dictionary) -> void:
 	var r := _loudness_rms(rec)
 	it.set_text(COL_LOUDNESS, "" if is_nan(r) else "%.1f dB" % r)
 	it.set_tooltip_text(COL_LOUDNESS,
-		"Measured integrated loudness (dBFS). Run 'Measure loudness' to fill. " \
-		+ "Used by Normalize to hit a target level.")
+		"Measured original loudness (dBFS) of the file. Run 'Measure loudness' to fill.")
+	_apply_final_cell(it, rec)
+
+
+# The resulting playback loudness = orig dB + Gain dB. Read-only; blank until
+# loudness is measured.
+func _final_db(rec: Variant) -> float:
+	var r := _loudness_rms(rec)
+	return NAN if is_nan(r) else r + _get_gain_db(rec)
+
+
+func _apply_final_cell(it: TreeItem, rec: Dictionary) -> void:
+	var f := _final_db(rec)
+	it.set_text(COL_FINAL_DB, "" if is_nan(f) else "%.1f dB" % f)
+	it.set_tooltip_text(COL_FINAL_DB,
+		"Resulting loudness when played = orig dB + Gain dB. This is what the Level " \
+		+ "is steering. Read-only.")
 
 
 func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
@@ -1635,6 +1655,7 @@ func _on_gain_db_edited(rec: Variant, it: TreeItem) -> void:
 	var v := clampf(0.0 if txt == "" else txt.to_float(), GAIN_DB_MIN, GAIN_DB_MAX)
 	_set_userdata(rec, "gain_db", v)
 	it.set_text(COL_GAIN_DB, _fmt_gain(v))
+	_apply_final_cell(it, rec)
 	if v > 0.0:
 		_status_label.text = "Gain dB +%s boosts above the file's level and may clip." % str(snappedf(v, 0.1))
 	if rec == _playing_rec:                    # live-apply to the current track
@@ -1689,6 +1710,7 @@ func _apply_target_to_gain(rec: Variant, it: TreeItem) -> int:
 	_userdata[key] = ud
 	if it != null and is_instance_valid(it):
 		it.set_text(COL_GAIN_DB, _fmt_gain(g))
+		_apply_final_cell(it, rec)
 	if rec == _playing_rec:
 		_play_gain_db = g
 		_apply_volume()
@@ -1809,6 +1831,7 @@ func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
 			ud2["gain_db"] = v
 			_userdata[key] = ud2
 			it.set_text(COL_GAIN_DB, _fmt_gain(v))
+			_apply_final_cell(it, rec)
 			if rec == _playing_rec:                 # live-apply to the current track
 				_play_gain_db = v
 				_apply_volume()
