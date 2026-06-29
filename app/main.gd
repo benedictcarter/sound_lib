@@ -13,34 +13,33 @@ const COL_RATE := 5
 const COL_BIT := 6
 const COL_CH := 7
 const COL_SIZE := 8
-const COL_RATING := 9   # user data (app/userdata.json)
+const COL_RATING := 9   # user data (userdata.json)
 const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
-const COL_SOUNDS := 11  # analysis: detected sound count (analysis.json)
-const COL_CHOP_DB := 12 # suggested/edited chop silence threshold (chopping.json)
-const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
-const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
-const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
-const COL_TAGS := 16    # user data (your own keywords; editable inline)
-const COL_LEVEL := 17   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
-const COL_LOUDNESS := 18 # measured integrated loudness "orig dB", dBFS (loudness.json; read-only)
-const COL_GAIN_DB := 19 # user data: per-track applied playback gain in dB
-const COL_FINAL_DB := 20 # read-only: resulting loudness = orig dB + Gain dB
-const COL_COUNT := 21
+const COL_CHOP_DB := 11 # suggested/edited chop silence threshold (chopping.json)
+const COL_CHOP_GAP := 12 # suggested/edited chop min-gap seconds (chopping.json)
+const COL_CHOP_SND := 13 # suggested/edited chop min-sound seconds (chopping.json)
+const COL_CHOP_N := 14  # resulting chop pieces at those settings (chopping.json)
+const COL_TAGS := 15    # user data (your own keywords; editable inline)
+const COL_LEVEL := 16   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
+const COL_LOUDNESS := 17 # measured integrated loudness "orig dB", LUFS (loudness.json; read-only)
+const COL_GAIN_DB := 18 # user data: per-track applied playback gain in dB
+const COL_FINAL_DB := 19 # read-only: resulting loudness = orig dB + Gain dB
+const COL_COUNT := 20
 
 const COL_TITLES := [
 	"Filename", "Library", "Supplier", "Bundle",
-	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays", "Sounds",
+	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays",
 	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags",
 	"tgt vol/Level", "orig dB", "Gain dB", "final dB",
 ]
-# Which record field each column sorts/reads. Bundle, Rating, Plays, Sounds,
+# Which record field each column sorts/reads. Bundle, Rating, Plays,
 # Chop dB/gap/snd/pieces, Tags, Level, orig dB, Gain dB and final dB are special-cased.
 const COL_FIELD := [
 	"filename", "library", "supplier", "bundle",
-	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "", "",
+	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
-	COL_RATING, COL_PLAYS, COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
+	COL_RATING, COL_PLAYS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 	COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]
 # Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
 # across a selection). Driven by the SELECTED column, not hard-wired to Tags.
@@ -72,7 +71,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 60, 70, 72, 70, 80, 200, 96, 72, 64, 72]
+const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -223,10 +222,6 @@ var _userdata: Dictionary = {}
 var _ud_path: String = ""
 var _star_btns: Array = []    # 5 rating buttons in the player bar
 
-# analysis (gap detection) -- { rel_path : {"sounds": int} }, persisted apart.
-var _analysis: Dictionary = {}
-var _an_path: String = ""
-
 # suggested/edited chop params -- { rel_path : {"silence_db","min_gap_s",
 # "min_sound_s","chops"} } or {"continuous": true}. Lives with the audio.
 var _chopping: Dictionary = {}
@@ -346,7 +341,6 @@ func _ready() -> void:
 	# survives moving the library and is never touched by repo housekeeping.
 	var data_dir := _data_dir()
 	_ud_path = data_dir.path_join("userdata.json")
-	_an_path = data_dir.path_join("analysis.json")
 	_chop_path = data_dir.path_join("chopping.json")
 	_lo_path = data_dir.path_join("loudness.json")
 	_an_out_path = ProjectSettings.globalize_path("user://envelope.json")
@@ -354,7 +348,6 @@ func _ready() -> void:
 	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
 	_load_userdata()
-	_load_analysis()
 	_load_chopping()
 	_load_loudness()
 	_build_ui()
@@ -709,12 +702,6 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_snd_slider = _add_slider(bar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
 	_snd_lbl = bar.get_child(bar.get_child_count() - 1) as Label
 
-	var save := Button.new()
-	save.text = "Save count"
-	save.tooltip_text = "Store this sound count in the Sounds column"
-	save.pressed.connect(_save_current_count)
-	bar.add_child(save)
-
 	var playchops := Button.new()
 	playchops.text = "Play chops"
 	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
@@ -979,8 +966,6 @@ func _sort_value(rec: Dictionary, col: int) -> Variant:
 		return _get_rating(rec)
 	if col == COL_PLAYS:
 		return _get_plays(rec)
-	if col == COL_SOUNDS:
-		return _get_sounds(rec)
 	if col == COL_CHOP_DB:
 		return _chop_db_val(rec)
 	if col == COL_CHOP_GAP:
@@ -1065,7 +1050,7 @@ func _populate_tree() -> void:
 		_apply_chop_cells(it, rec)
 		_apply_loudness_cell(it, rec)
 		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
-				COL_SOUNDS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
+				COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 				COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
 		for c in EDITABLE_COLS:                 # tint editable cells a touch lighter
@@ -1102,8 +1087,6 @@ func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
 	it.set_text(COL_RATING, _stars(rating))
 	var plays := _get_plays(rec)
 	it.set_text(COL_PLAYS, "" if plays == 0 else str(plays))
-	var sc := _get_sounds(rec)
-	it.set_text(COL_SOUNDS, "" if sc <= 0 else str(sc))
 	it.set_text(COL_TAGS, _get_tags(rec))
 	it.set_editable(COL_TAGS, true)            # double-click to edit
 	it.set_tooltip_text(COL_TAGS, "Double-click to edit. Separate keywords with spaces or commas.")
@@ -2015,27 +1998,8 @@ func _stars(n: int) -> String:
 
 
 # ===========================================================================
-#  Gap analysis / sound-count visualiser
+#  Gap analysis / chop visualiser
 # ===========================================================================
-func _load_analysis() -> void:
-	if not FileAccess.file_exists(_an_path):
-		return
-	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(_an_path))
-	if typeof(data) == TYPE_DICTIONARY:
-		_analysis = data
-
-
-func _save_analysis() -> void:
-	var f := FileAccess.open(_an_path, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify(_analysis))
-
-
-func _get_sounds(rec: Dictionary) -> int:
-	var a: Variant = _analysis.get(String(rec.get("path", "")))
-	return int(a.get("sounds", 0)) if typeof(a) == TYPE_DICTIONARY else 0
-
-
 # ----- chop params (chopping.json, beside the audio) -----------------------
 func _load_chopping() -> void:
 	if not FileAccess.file_exists(_chop_path):
@@ -2684,28 +2648,6 @@ func _gd_find_segments(levels: PackedFloat32Array, silence_db: float,
 	if seg_start >= 0 and (n - seg_start) >= min_sound_frames:
 		segs.append([seg_start, n])
 	return segs
-
-
-func _save_current_count() -> void:
-	if typeof(_an_rec) != TYPE_DICTIONARY or _an_levels.is_empty():
-		_an_status.text = "Nothing analysed to save."
-		return
-	var segs := _gd_find_segments(_an_levels, _sil_slider.value,
-		_gap_slider.value, _snd_slider.value, _an_frame_s)
-	var key := String(_an_rec.get("path", ""))
-	_analysis[key] = {
-		"sounds": segs.size(),
-		"silence_db": _sil_slider.value,
-		"min_gap_s": _gap_slider.value,
-		"min_sound_s": _snd_slider.value,
-	}
-	_save_analysis()
-	# refresh the row's Sounds cell
-	var it := _tree.get_selected()
-	if it and it.get_metadata(0) == _an_rec:
-		it.set_text(COL_SOUNDS, str(segs.size()))
-	_an_status.text = "Saved: %s → %d sounds" % [
-		String(_an_rec.get("filename", "")), segs.size()]
 
 
 # ===========================================================================

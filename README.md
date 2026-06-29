@@ -74,24 +74,19 @@ or:
 - **Resize columns** — drag the divider between column headers. The horizontal-
   resize cursor appears when you hover a divider.
 
-### Gap analysis / "Sounds" (how many sounds are in a file)
-Long files often contain several sounds separated by silence. The analyser
-counts them and previews where it would chop.
+### Gap analysis (how many sounds are in a file)
+Long files often contain several sounds separated by silence. The analyser shows
+them and previews where it would chop (the **Chop pieces** column holds the count).
 
 - **Just click a row** — it auto-analyses and draws the picture (no button
-  press). The graph paints the kept **sounds in green**, the **dead space that
-  would be chopped out in black**, the **chop start/stop of each piece in blue**,
-  the silence threshold (orange line, labelled with its **dB** value) and a white
-  playback cursor. (The **Analyse selected** button still works.)
-- **Click or drag on the graph** to set the silence threshold to that level —
-  the chop pieces recompute live and the file's chop columns update.
-- Tune live: **Silence** (what counts as silence, default −60 dBFS), **Min gap**
-  (how long a silence must be, default 1.5 s) and **Min sound** (ignore blips).
-  **Suggest** picks a threshold from the file's own loudness histogram.
-  Changing Silence/gap on the analysed file saves to its chop columns.
-- **Save count** writes the result to the **Sounds** column.
-- To fill the column for the whole library at once:
-  `py indexer/analyze.py` (reads all audio; incremental on re-runs).
+  press). The graph paints the kept **sounds in green**, the bits being **chopped
+  away in grey**, the **chop start/stop of each piece in blue**, the silence
+  threshold (orange line, labelled with its **dB** value) and a white playback
+  cursor. **Left-click** seeks + sets the chop dB; the **seek strip** below seeks
+  only; **right-click** sets the chop dB alone.
+- Tune live: **Silence** (default −60 dBFS), **Min gap** (default 1.5 s) and
+  **Min sound** (ignore blips). **Suggest** picks a threshold from the file's own
+  loudness histogram. Changing these on the analysed file saves to its chop columns.
 
 ### Analysing audio (chop suggestions + loudness)
 - Click **Analyse audio (chops + loudness)** (in the analyser bar). For every
@@ -118,7 +113,7 @@ counts them and previews where it would chop.
   play, rate, retag, and even chop *them* straight away like any other file.
 
 Detection lives in `indexer/gaps.py` and is mirrored in the app (GDScript) so
-the sliders respond instantly. `analysis.json` / `chopping.json` (in the library
+the sliders respond instantly. `chopping.json` / `loudness.json` (in the library
 root) store the counts and chop params.
 - **Tags** — your own keywords per file. Double-click the cell to edit;
   separate keywords with spaces or commas. Stored with your other data and
@@ -173,7 +168,7 @@ Stored in **`<library_root>/userdata.json`** (e.g.
 code repo** — keyed by each file's relative path. So it **survives re-indexing,
 lives alongside the library it describes, and is never touched by repo cleanup**.
 The location is taken from `library_root` in `library.cfg`, so it follows the
-library if you move it. (`analysis.json`, the Sounds-column data, sits next to it.) It's
+library if you move it. It's
 gitignored by default (personal data); remove the `/app/userdata.json` line from
 `.gitignore` if you'd rather version it.
 

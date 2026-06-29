@@ -21,7 +21,7 @@ for non-obvious gotchas.
 - **User data** (rating + play count + tags + `vol_mult`) lives in `<library_root>/userdata.json`
   (e.g. S:\code\sound_lib_data\userdata.json), keyed by relative path — OUTSIDE
   the repo, with the audio. Path resolved in `_data_dir()` from library.cfg.
-  `analysis.json` AND `chopping.json` sit beside it. NEVER `rm` these from repo
+  `chopping.json` AND `loudness.json` sit beside it. NEVER `rm` these from repo
   cleanup (a past bug deleted a user's tags when they were in app/). Not in
   index.json -> survives re-indexing.
   Plays increment on the player's `finished` signal (end reached, not Stop).
@@ -79,8 +79,6 @@ for non-obvious gotchas.
   suggested threshold (histogram valley); the Godot analyser calls this in a
   Thread, caches the envelope, and re-detects live in GDScript (`_gd_find_segments`
   mirrors gaps.py) as the sliders move. WaveGraph (inner class) draws it.
-- `indexer/analyze.py` — batch counts -> `app/analysis.json` (Sounds column).
-  Incremental; reads all audio (~217 GB) so a full run takes a while.
 - `indexer/suggest_chops.py` — batch "optimal chop" suggester -> `chopping.json`
   in the LIBRARY ROOT (beside the audio, NOT app/ — that's where the app reads
   it). Per file: histogram-suggested silence_db + chop count. chops<=1 ->
@@ -155,7 +153,6 @@ for non-obvious gotchas.
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)
 - Tune detection on sample files: `py indexer/explore_gaps.py`
-- Batch sound counts: `py indexer/analyze.py`
 - Combined analysis (what the app runs): `py indexer/analyse_audio.py`  (chops + loudness, one read/file)
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
