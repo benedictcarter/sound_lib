@@ -211,6 +211,23 @@ class SeekBar extends Control:
 			draw_circle(Vector2(px, cy), 6.0, Color(1, 1, 1, 0.95))
 
 
+## Draws the column-resize dividers (white line + ◄► arrows) over the filter
+## header at each column boundary. Purely visual (mouse_filter = IGNORE); the
+## actual drag is handled on the tree header just below.
+class DividerMarks extends Control:
+	var edges := PackedFloat32Array()
+
+	func _draw() -> void:
+		var cy := size.y - 8.0
+		var c := Color(1, 1, 1, 0.85)
+		for x in edges:
+			draw_line(Vector2(x, 1.0), Vector2(x, size.y - 1.0), Color(1, 1, 1, 0.5), 1.0)
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(x - 3.0, cy), Vector2(x - 7.0, cy - 3.0), Vector2(x - 7.0, cy + 3.0)]), c)
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(x + 3.0, cy), Vector2(x + 7.0, cy - 3.0), Vector2(x + 7.0, cy + 3.0)]), c)
+
+
 ## Two-knob range slider for numeric column filters. Maps over the column's actual
 ## data min..max (optionally log scale for wide positive ranges); drag either knob.
 class RangeSlider extends Control:
@@ -382,6 +399,7 @@ var _lib_label: Label                 # library-root path shown top-left
 var _vol_slider: HSlider
 # per-column filter header (aligned above the columns; type per column)
 var _filter_header: Control
+var _div_marks: DividerMarks           # white ◄► resize markers over column edges
 var _colfilters: Dictionary = {}      # col -> the filter control node
 var _filter_text: Dictionary = {}     # col -> lowercased substring (text columns)
 var _filter_set: Dictionary = {}      # col -> {value:true} allow-set (tick columns)
@@ -689,6 +707,9 @@ func _build_ui() -> void:
 	_filter_header.custom_minimum_size = Vector2(0, 28)
 	_filter_header.clip_contents = true
 	tablebox.add_child(_filter_header)
+	_div_marks = DividerMarks.new()                # white ◄► markers over column edges
+	_div_marks.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_filter_header.add_child(_div_marks)           # added last -> drawn on top
 	tablebox.add_child(_tree)
 	root.add_child(tablebox)
 
@@ -1028,13 +1049,21 @@ func _layout_filter_header() -> void:
 	if first == null:
 		return
 	var h := _filter_header.size.y
+	var edges := PackedFloat32Array()
 	for col in COL_COUNT:
-		var ctrl: Variant = _colfilters.get(col)
-		if ctrl == null:
-			continue
 		var r := _tree.get_item_area_rect(first, col)   # exact column x + width
-		ctrl.position = Vector2(r.position.x, 2.0)
-		ctrl.size = Vector2(maxf(8.0, r.size.x - 2.0), h - 4.0)
+		var ctrl: Variant = _colfilters.get(col)
+		if ctrl != null:
+			ctrl.position = Vector2(r.position.x, 2.0)
+			ctrl.size = Vector2(maxf(8.0, r.size.x - 2.0), h - 4.0)
+		var ex := r.end.x                                # right divider of this column
+		if ex > 2.0 and ex < _filter_header.size.x - 1.0:
+			edges.append(ex)
+	if _div_marks:
+		_div_marks.position = Vector2.ZERO
+		_div_marks.size = _filter_header.size
+		_div_marks.edges = edges
+		_div_marks.queue_redraw()
 
 
 # A column's numeric value for filtering — NaN when the row has no value there
