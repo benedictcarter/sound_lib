@@ -623,10 +623,18 @@ func _build_ui() -> void:
 	_sem_edit.text_submitted.connect(_on_semantic_submitted)
 	bar0.add_child(_sem_edit)
 
-	# --- toolbar row: text Filter box (left-aligned with the semantic box) --
+	# --- toolbar row: Clear filters + count + text Filter box (one row) ----
 	var bar1 := HBoxContainer.new()
 	bar1.add_theme_constant_override("separation", 8)
 	root.add_child(bar1)
+
+	var clear := Button.new()
+	clear.text = "Clear filters"
+	clear.pressed.connect(_on_clear)
+	bar1.add_child(clear)
+
+	_count_label = Label.new()
+	bar1.add_child(_count_label)
 
 	_search = LineEdit.new()
 	_search.placeholder_text = "filter by filename / library / supplier / description / tags  (space = AND)"
@@ -638,25 +646,6 @@ func _build_ui() -> void:
 	_autoplay = CheckButton.new()                # added to the player bar below
 	_autoplay.text = "Autoplay"
 	_autoplay.button_pressed = true
-
-	# --- toolbar row 2: clear + count (per-column filters live above the table) --
-	var bar2 := HBoxContainer.new()
-	bar2.add_theme_constant_override("separation", 8)
-	root.add_child(bar2)
-
-	var clear := Button.new()
-	clear.text = "Clear filters"
-	clear.pressed.connect(_on_clear)
-	bar2.add_child(clear)
-
-	_count_label = Label.new()                     # immediately right of Clear filters
-	bar2.add_child(_count_label)
-
-	var fhint := Label.new()
-	fhint.text = "    ↓ each column filters by its own type (text / tick-boxes / min–max)"
-	fhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
-	fhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bar2.add_child(fhint)
 
 	# --- table ----------------------------------------------------------
 	_tree = Tree.new()
