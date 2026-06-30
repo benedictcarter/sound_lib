@@ -1770,9 +1770,21 @@ func _header_height() -> float:
 
 
 # Column whose right divider sits under x (only within the header band), else -1.
+# Uses the Tree's ACTUAL column right-edges (get_item_area_rect) so the grab zones
+# line up with the drawn dividers — summing _col_w drifts (panel margin/spacing).
 func _divider_at(pos: Vector2) -> int:
 	if pos.y > _header_height():
 		return -1
+	var first: TreeItem = null
+	var root := _tree.get_root()
+	if root:
+		first = root.get_first_child()
+	if first != null:
+		for c in range(COL_COUNT):
+			if absf(pos.x - _tree.get_item_area_rect(first, c).end.x) <= RESIZE_GRAB:
+				return c
+		return -1
+	# fallback (empty table): sum the stored widths
 	var x := -float(_tree.get_scroll().x)
 	for c in range(COL_COUNT):
 		x += _col_w[c]
