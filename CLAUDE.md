@@ -72,14 +72,19 @@ for non-obvious gotchas.
   Tune the `STOPWORDS` set in main.gd to filter noise words.
 - **Semantic search** (meaning-based, NOT an LLM): `indexer/embed.py` embeds each
   file's text (filename+description+library+supplier) with a small local ONNX
-  sentence model (fastembed, BAAI bge-small, 384-dim) -> `app/embeddings.npz`
-  (vectors + paths; gitignored, rebuild after re-indexing). The "Semantic" toggle
-  by the search box switches the box to meaning mode: Enter runs
+  sentence model (fastembed, BAAI bge-small, 384-dim) -> `embeddings.npz` in the
+  LIBRARY ROOT (beside userdata, with the audio). Incremental: `--only-missing`
+  (+`--progress`) embeds only files with no vector yet (new chops). The app has
+  its OWN search bar ABOVE the text Filter (`_sem_edit`): Enter runs
   `indexer/search.py "<query>" <out> 500` in a thread (`_run_semantic`/`_sem_*`),
-  which embeds the query (bge `query_embed`) and ranks by cosine; the app shows
-  the results in rank order (`_sem_active`, skips sort), intersected with the
-  dropdown filters (`_passes_dropdown_filters`). `_by_path` maps rel_path->record.
-  Per query ~1.1s (model load each call; fine on Enter, no daemon).
+  which embeds the query (bge `query_embed`), ranks by cosine, and returns paths +
+  scores. `_sem_finished` builds the ranked BASE set `_sem_ranked` + `_sem_scores`;
+  the text **Filter** then narrows that base (`_apply` iterates `_sem_ranked` when
+  `_sem_active`, keeping cosine rank — no column sort). The **Score** column
+  (`COL_SCORE`, read-only) shows cosine; default sort is Score desc. "Update index"
+  button (`_update_embeddings`/`_emb_*`) runs `embed.py --only-missing` threaded
+  with progress. `_by_path` maps rel_path->record. ~1.1s/query (model load each
+  call; fine on Enter, no daemon).
 - Godot tooling: `S:\code\godot\Godot_v4.6.3-stable_win64_console.exe` (console
   build prints to stdout — use for headless validation).
 
@@ -168,7 +173,7 @@ for non-obvious gotchas.
 - Combined analysis (what the app runs): `py indexer/analyse_audio.py`  (chops + loudness, one read/file)
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
-- Build semantic search index: `py indexer/embed.py`  (-> app/embeddings.npz)
+- Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)
 - Run the Python tests: `py -m pytest`  (golden tests in `indexer/tests/`)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`

@@ -19,7 +19,7 @@ import numpy as np
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 REPO = Path(__file__).parent.parent
-EMB = REPO / "app" / "embeddings.npz"
+INDEX = REPO / "app" / "index.json"
 
 
 def main() -> None:
@@ -27,6 +27,8 @@ def main() -> None:
     out = sys.argv[2] if len(sys.argv) > 2 else str(REPO / "app" / "search_result.json")
     topn = int(sys.argv[3]) if len(sys.argv) > 3 else 400
 
+    idx = json.loads(INDEX.read_text(encoding="utf-8"))
+    EMB = Path(idx["library_root"]) / "embeddings.npz"
     if not EMB.exists():
         Path(out).write_text(json.dumps({"ok": False, "error": "no embeddings"}), encoding="utf-8")
         sys.exit("embeddings.npz missing — run: py indexer/embed.py")

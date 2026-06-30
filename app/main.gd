@@ -5,40 +5,41 @@ extends Control
 
 # ----- column layout -------------------------------------------------------
 const COL_FILENAME := 0
-const COL_LIBRARY := 1
-const COL_SUPPLIER := 2
-const COL_BUNDLE := 3
-const COL_DURATION := 4
-const COL_RATE := 5
-const COL_BIT := 6
-const COL_CH := 7
-const COL_SIZE := 8
-const COL_RATING := 9   # user data (userdata.json)
-const COL_PLAYS := 10   # user data (auto-incremented on finished playback)
-const COL_CHOP_DB := 11 # suggested/edited chop silence threshold (chopping.json)
-const COL_CHOP_GAP := 12 # suggested/edited chop min-gap seconds (chopping.json)
-const COL_CHOP_SND := 13 # suggested/edited chop min-sound seconds (chopping.json)
-const COL_CHOP_N := 14  # resulting chop pieces at those settings (chopping.json)
-const COL_TAGS := 15    # user data (your own keywords; editable inline)
-const COL_LEVEL := 16   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
-const COL_LOUDNESS := 17 # measured integrated loudness "orig dB", LUFS (loudness.json; read-only)
-const COL_GAIN_DB := 18 # user data: per-track applied playback gain in dB
-const COL_FINAL_DB := 19 # read-only: resulting loudness = orig dB + Gain dB
-const COL_COUNT := 20
+const COL_SCORE := 1    # semantic-search cosine similarity (read-only; blank otherwise)
+const COL_LIBRARY := 2
+const COL_SUPPLIER := 3
+const COL_BUNDLE := 4
+const COL_DURATION := 5
+const COL_RATE := 6
+const COL_BIT := 7
+const COL_CH := 8
+const COL_SIZE := 9
+const COL_RATING := 10  # user data (userdata.json)
+const COL_PLAYS := 11   # user data (auto-incremented on finished playback)
+const COL_CHOP_DB := 12 # suggested/edited chop silence threshold (chopping.json)
+const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
+const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
+const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
+const COL_TAGS := 16    # user data (your own keywords; editable inline)
+const COL_LEVEL := 17   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
+const COL_LOUDNESS := 18 # measured integrated loudness "orig dB", LUFS (loudness.json; read-only)
+const COL_GAIN_DB := 19 # user data: per-track applied playback gain in dB
+const COL_FINAL_DB := 20 # read-only: resulting loudness = orig dB + Gain dB
+const COL_COUNT := 21
 
 const COL_TITLES := [
-	"Filename", "Library", "Supplier", "Bundle",
+	"Filename", "Score", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays",
 	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags",
 	"tgt vol/Level", "orig dB", "Gain dB", "final dB",
 ]
-# Which record field each column sorts/reads. Bundle, Rating, Plays,
+# Which record field each column sorts/reads. Score, Bundle, Rating, Plays,
 # Chop dB/gap/snd/pieces, Tags, Level, orig dB, Gain dB and final dB are special-cased.
 const COL_FIELD := [
-	"filename", "library", "supplier", "bundle",
+	"filename", "", "library", "supplier", "bundle",
 	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "",
 ]
-const NUMERIC_COLS := [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
+const NUMERIC_COLS := [COL_SCORE, COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
 	COL_RATING, COL_PLAYS, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 	COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]
 # Columns that support spreadsheet-style multi-cell editing (copy/paste/Del/type
@@ -71,7 +72,7 @@ const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
+const COL_DEFAULT_W := [460, 56, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -269,13 +270,23 @@ var _chop_result_path: String = ""
 
 var _norm_target_edit: LineEdit       # the 0-10 Level for the "set on selection" action
 
-# semantic search (embeddings via indexer/search.py, threaded)
-var _semantic_chk: CheckButton
+# semantic search (its own bar above the text filter; ranks via indexer/search.py)
+var _sem_edit: LineEdit               # the semantic query box
 var _sem_thread: Thread = null
 var _sem_busy: bool = false
-var _sem_active: bool = false         # results currently shown in semantic rank order
+var _sem_active: bool = false         # a semantic result set is the current base
+var _sem_ranked: Array = []           # records in cosine-rank order (the base set)
+var _sem_scores: Dictionary = {}      # rel_path -> cosine score (for the Score column)
 var _sem_result_path: String = ""
 var _by_path: Dictionary = {}         # rel_path -> record, for fast rank lookup
+
+# embeddings.npz (beside the audio) + the "Update semantic index" job
+var _emb_path: String = ""
+var _emb_thread: Thread = null
+var _emb_busy: bool = false
+var _emb_btn: Button
+var _emb_poll: Timer
+var _emb_progress_path: String = ""
 
 # persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
 var _prefs: Dictionary = {}
@@ -363,6 +374,8 @@ func _ready() -> void:
 	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
+	_emb_path = data_dir.path_join("embeddings.npz")
+	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
 	_load_userdata()
 	_load_chopping()
 	_load_loudness()
@@ -484,30 +497,44 @@ func _build_ui() -> void:
 	root.add_theme_constant_override("separation", 6)
 	add_child(root)
 
-	# --- toolbar row 1: search + autoplay -------------------------------
+	# --- toolbar row 0: SEMANTIC search (meaning-based; ranks the base set) ---
+	var bar0 := HBoxContainer.new()
+	bar0.add_theme_constant_override("separation", 8)
+	root.add_child(bar0)
+
+	var seml := Label.new()
+	seml.text = "Semantic"
+	bar0.add_child(seml)
+
+	_sem_edit = LineEdit.new()
+	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
+	_sem_edit.clear_button_enabled = true
+	_sem_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sem_edit.text_submitted.connect(_on_semantic_submitted)
+	bar0.add_child(_sem_edit)
+
+	_emb_btn = Button.new()
+	_emb_btn.text = "Update index"
+	_emb_btn.tooltip_text = "Embed any files that don't have a semantic vector yet " \
+		+ "(e.g. new chops). Run once before first use; quick afterwards."
+	_emb_btn.pressed.connect(_update_embeddings)
+	bar0.add_child(_emb_btn)
+
+	# --- toolbar row 1: text filter + autoplay --------------------------
 	var bar1 := HBoxContainer.new()
 	bar1.add_theme_constant_override("separation", 8)
 	root.add_child(bar1)
 
 	var sl := Label.new()
-	sl.text = "Search"
+	sl.text = "Filter"
 	bar1.add_child(sl)
 
 	_search = LineEdit.new()
-	_search.placeholder_text = "filename / library / supplier / description  (space = AND)"
+	_search.placeholder_text = "filter by filename / library / supplier / description / tags  (space = AND)"
 	_search.clear_button_enabled = true
 	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_search.text_changed.connect(_on_search_changed)
-	_search.text_submitted.connect(_on_search_submitted)
 	bar1.add_child(_search)
-
-	_semantic_chk = CheckButton.new()
-	_semantic_chk.text = "Semantic"
-	_semantic_chk.tooltip_text = "Meaning-based search: type a description (e.g. 'guns " \
-		+ "shooting') and press Enter — ranks files by what they SOUND like, not just " \
-		+ "word match. Build the index first: py indexer/embed.py"
-	_semantic_chk.toggled.connect(_on_semantic_toggled)
-	bar1.add_child(_semantic_chk)
 
 	_autoplay = CheckButton.new()
 	_autoplay.text = "Autoplay on select"
@@ -726,6 +753,12 @@ func _build_ui() -> void:
 	_sg_poll.wait_time = 1.0
 	_sg_poll.timeout.connect(_sg_tick)
 	add_child(_sg_poll)
+
+	# poll the embeddings job's progress file while it runs
+	_emb_poll = Timer.new()
+	_emb_poll.wait_time = 1.0
+	_emb_poll.timeout.connect(_emb_tick)
+	add_child(_emb_poll)
 
 	# coalesce chopping.json writes so a slider/graph drag saves once, not per tick
 	_chop_save_debounce = Timer.new()
@@ -1005,24 +1038,21 @@ func _fill_option(opt: OptionButton, field: String, short: bool) -> void:
 #  Filtering / sorting
 # ===========================================================================
 func _on_search_changed(_t: String) -> void:
-	if _semantic_chk and _semantic_chk.button_pressed:
-		return                                     # semantic searches on Enter, not per-key
-	_debounce.start()
+	_debounce.start()                              # filters the base set (live, debounced)
 
 
-func _on_search_submitted(text: String) -> void:
-	if _semantic_chk and _semantic_chk.button_pressed:
-		_run_semantic(text.strip_edges())
-
-
-func _on_semantic_toggled(on: bool) -> void:
-	_search.placeholder_text = ("describe a sound, e.g. \"guns shooting\"  (Enter to search)"
-		if on else "filename / library / supplier / description  (space = AND)")
-	if on:
-		if _search.text.strip_edges() != "":
-			_run_semantic(_search.text.strip_edges())
-	else:
-		_apply()                                   # back to keyword filtering
+func _on_semantic_submitted(text: String) -> void:
+	var q := text.strip_edges()
+	if q == "":                                    # cleared -> drop semantic base
+		_sem_active = false
+		_sem_ranked = []
+		_sem_scores = {}
+		if _sort_col == COL_SCORE:                 # leave Score-sort behind
+			_sort_col = COL_FILENAME
+			_sort_asc = true
+		_apply()
+		return
+	_run_semantic(q)
 
 
 func _on_clear() -> void:
@@ -1051,11 +1081,13 @@ func _passes_dropdown_filters(rec: Dictionary) -> bool:
 	return true
 
 
+# The text box filters the BASE set: the semantic results (in rank order) when a
+# semantic search is active, else all files. So semantic finds, text narrows.
 func _apply() -> void:
-	_sem_active = false
+	var base: Array = _sem_ranked if _sem_active else _all
 	var tokens := _search.text.strip_edges().to_lower().split(" ", false)
 	_filtered = []
-	for rec in _all:
+	for rec in base:
 		if not _passes_dropdown_filters(rec):
 			continue
 		if tokens.size() > 0:
@@ -1075,7 +1107,8 @@ func _apply() -> void:
 				continue
 		_filtered.append(rec)
 
-	_sort_filtered()
+	if not _sem_active:                            # semantic keeps its cosine rank
+		_sort_filtered()
 	_populate_tree()
 
 
@@ -1084,8 +1117,8 @@ func _run_semantic(query: String) -> void:
 	if query == "":
 		_apply()
 		return
-	if not FileAccess.file_exists(ProjectSettings.globalize_path("res://embeddings.npz")):
-		_status_label.text = "No semantic index yet — build it once: py indexer/embed.py"
+	if not FileAccess.file_exists(_emb_path):
+		_status_label.text = "No semantic index yet — click 'Update index' (or run py indexer/embed.py)."
 		return
 	if _sem_busy:
 		return
@@ -1122,19 +1155,78 @@ func _sem_finished() -> void:
 			d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
 		return
 	var paths: Array = d.get("paths", [])
-	_filtered = []
-	for p in paths:
-		var rec: Variant = _by_path.get(String(p))
-		if typeof(rec) == TYPE_DICTIONARY and _passes_dropdown_filters(rec):
-			_filtered.append(rec)              # keep the search.py rank order
+	var scores: Array = d.get("scores", [])
+	# Build the ranked BASE set (cosine order) + the score map for the Score column.
+	_sem_ranked = []
+	_sem_scores = {}
+	for i in paths.size():
+		var rp := String(paths[i])
+		var rec: Variant = _by_path.get(rp)
+		if typeof(rec) == TYPE_DICTIONARY:
+			_sem_ranked.append(rec)
+			if i < scores.size():
+				_sem_scores[rp] = float(scores[i])
 	_sem_active = true
-	_populate_tree()                           # ranked, no column sort
-	_status_label.text = "Semantic results for \"%s\" — most relevant first (%d)" % [
+	_sort_col = COL_SCORE                       # sorted highest->lowest by default
+	_sort_asc = false
+	_apply()                                    # narrow by text/dropdowns, keep rank
+	_status_label.text = "Semantic results for \"%s\" — most relevant first (%d). Use Filter to narrow." % [
 		String(d.get("query", "")), _filtered.size()]
+
+
+# ----- "Update semantic index": embed files with no vector yet (embed.py) -----
+func _update_embeddings() -> void:
+	if _emb_busy:
+		return
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/embed.py").simplify_path()
+	if FileAccess.file_exists(_emb_progress_path):
+		DirAccess.remove_absolute(_emb_progress_path)
+	_emb_busy = true
+	_emb_btn.disabled = true
+	_status_label.text = "Updating semantic index (embedding any new files)…"
+	_emb_thread = Thread.new()
+	_emb_thread.start(_emb_run.bind(script, _emb_progress_path))
+	_emb_poll.start()
+
+
+func _emb_run(script: String, progress: String) -> void:
+	var output: Array = []
+	var args := [script, "--only-missing", "--progress", progress]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_emb_finished")
+
+
+func _emb_tick() -> void:
+	if FileAccess.file_exists(_emb_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
+		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
+			_status_label.text = "Embedding new files… %d / %d" % [
+				int(d.get("analysed", 0)), int(d.get("total", 0))]
+
+
+func _emb_finished() -> void:
+	_emb_poll.stop()
+	if _emb_thread:
+		_emb_thread.wait_to_finish()
+		_emb_thread = null
+	_emb_busy = false
+	_emb_btn.disabled = false
+	var n := 0
+	if FileAccess.file_exists(_emb_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			n = int(d.get("analysed", 0))
+	_status_label.text = "Semantic index updated — %d new file%s embedded." % [
+		n, "" if n == 1 else "s"]
 
 
 func _sort_value(rec: Dictionary, col: int) -> Variant:
 	# Rating/Plays come from user data; everything else from the record.
+	if col == COL_SCORE:
+		return float(_sem_scores.get(String(rec.get("path", "")), -1.0))
 	if col == COL_RATING:
 		return _get_rating(rec)
 	if col == COL_PLAYS:
@@ -1219,10 +1311,12 @@ func _populate_tree() -> void:
 		it.set_text(COL_BIT, "" if rec.get("bit_depth") == null else str(int(rec.get("bit_depth"))))
 		it.set_text(COL_CH, "" if rec.get("channels") == null else str(int(rec.get("channels"))))
 		it.set_text(COL_SIZE, _fmt_size(rec.get("size")))
+		var sc: Variant = _sem_scores.get(String(rec.get("path", "")))
+		it.set_text(COL_SCORE, "%.3f" % float(sc) if sc != null else "")
 		_apply_userdata_cells(it, rec)
 		_apply_chop_cells(it, rec)
 		_apply_loudness_cell(it, rec)
-		for c in [COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
+		for c in [COL_SCORE, COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
 				COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 				COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
@@ -2709,6 +2803,8 @@ func _exit_tree() -> void:
 		_chop_thread.wait_to_finish()
 	if _sem_thread and _sem_thread.is_started():
 		_sem_thread.wait_to_finish()
+	if _emb_thread and _emb_thread.is_started():
+		_emb_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
