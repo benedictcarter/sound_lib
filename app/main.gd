@@ -87,11 +87,17 @@ const DEF_MIN_SOUND_S := 0.3
 class WaveGraph extends Control:
 	signal threshold_picked(db: float)     # right-click/drag: set the silence threshold
 	signal seek_requested(fraction: float) # left-click/drag: scrub playback
+	signal region_selected(a: float, b: float)  # manual mode: drag-selected [a,b] fractions
 
 	var levels := PackedFloat32Array()
 	var segments: Array = []          # [[start_frame, end_frame], ...]
 	var threshold_db: float = DEF_SILENCE_DB
 	var playhead: float = -1.0        # 0..1; < 0 hides
+	# Manual mode: left-drag picks ONE region [sel_a, sel_b] (fractions) to chop
+	# verbatim — no threshold/gap logic. Right-click clears it.
+	var manual_mode: bool = false
+	var sel_a: float = -1.0
+	var sel_b: float = -1.0
 	const TOP_DB := 0.0
 	const BOT_DB := -90.0
 	const TRACK_PAD := 7.0            # px from the bottom for the seek track + dot
@@ -110,6 +116,31 @@ class WaveGraph extends Control:
 	# Left DRAG = scrub only (so a horizontal scrub doesn't wobble the threshold).
 	# Right click/drag = set the chop dB level only.
 	func _gui_input(event: InputEvent) -> void:
+		# Manual region mode: left-drag picks ONE region; right-click clears it.
+		# (Seeking still works via the strip below; this surface is for selecting.)
+		if manual_mode:
+			if event is InputEventMouseButton and event.pressed:
+				if event.button_index == MOUSE_BUTTON_LEFT:
+					sel_a = _frac_at_x(event.position.x)
+					sel_b = sel_a
+					queue_redraw()
+					accept_event()
+				elif event.button_index == MOUSE_BUTTON_RIGHT:
+					sel_a = -1.0
+					sel_b = -1.0
+					region_selected.emit(-1.0, -1.0)
+					queue_redraw()
+					accept_event()
+			elif event is InputEventMouseButton and not event.pressed:
+				if event.button_index == MOUSE_BUTTON_LEFT and sel_a >= 0.0:
+					region_selected.emit(minf(sel_a, sel_b), maxf(sel_a, sel_b))
+					accept_event()
+			elif event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+				sel_b = _frac_at_x(event.position.x)
+				region_selected.emit(minf(sel_a, sel_b), maxf(sel_a, sel_b))
+				queue_redraw()
+				accept_event()
+			return
 		if event is InputEventMouseButton and event.pressed:
 			if event.button_index == MOUSE_BUTTON_LEFT:
 				seek_requested.emit(_frac_at_x(event.position.x))
@@ -143,28 +174,49 @@ class WaveGraph extends Control:
 		var has_segs := segments.size() > 0
 		var green := Color(0.30, 0.85, 0.45)
 		var grey := Color(0.46, 0.46, 0.52)
+		# In manual mode, "kept" = inside the drag-selected region; else the
+		# detected segments. The waveform colours the same way (green = kept).
+		var m_lo := minf(sel_a, sel_b)
+		var m_hi := maxf(sel_a, sel_b)
+		var m_sel := manual_mode and sel_a >= 0.0 and sel_b >= 0.0 and (m_hi - m_lo) > 0.0005
 		for x in int(w):
 			var fi := mini(int(float(x) / w * n), n - 1)
-			var kept := not has_segs or _frame_in_segment(fi)
+			var kept: bool
+			if manual_mode:
+				var fx := float(x) / w
+				kept = m_sel and fx >= m_lo and fx <= m_hi
+			else:
+				kept = not has_segs or _frame_in_segment(fi)
 			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), green if kept else grey, 1.0)
-		# chop boundaries: start + end of every kept piece, in blue
-		if has_segs:
-			var bcol := Color(0.30, 0.62, 1.0, 0.9)
-			for s in segments:
-				var xs := float(int(s[0])) / n * w
-				var xe := float(int(s[1])) / n * w
-				draw_line(Vector2(xs, 0), Vector2(xs, h), bcol, 1.0)
-				draw_line(Vector2(xe, 0), Vector2(xe, h), bcol, 1.0)
-		# silence threshold + its dB value
-		var ty := _yfor(threshold_db)
-		var ocol := Color(1.0, 0.6, 0.1)
-		draw_line(Vector2(0, ty), Vector2(w, ty), ocol, 1.5)
 		var font := get_theme_default_font()
-		var lbl := "%d dB" % int(round(threshold_db))
-		var lw := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
-		var lyt := clampf(ty - 4.0, 11.0, h - 2.0)
-		draw_string(font, Vector2(w - lw - 6.0, lyt), lbl,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ocol)
+		if manual_mode:
+			# bright yellow edges of the selected region; a hint when nothing picked
+			if m_sel:
+				var scol := Color(1.0, 0.85, 0.2)
+				draw_line(Vector2(m_lo * w, 0), Vector2(m_lo * w, h), scol, 1.5)
+				draw_line(Vector2(m_hi * w, 0), Vector2(m_hi * w, h), scol, 1.5)
+			else:
+				draw_string(font, Vector2(10, 16),
+					"Drag across the waveform to select a region to chop (right-click clears)",
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1.0, 0.85, 0.2))
+		else:
+			# chop boundaries: start + end of every kept piece, in blue
+			if has_segs:
+				var bcol := Color(0.30, 0.62, 1.0, 0.9)
+				for s in segments:
+					var xs := float(int(s[0])) / n * w
+					var xe := float(int(s[1])) / n * w
+					draw_line(Vector2(xs, 0), Vector2(xs, h), bcol, 1.0)
+					draw_line(Vector2(xe, 0), Vector2(xe, h), bcol, 1.0)
+			# silence threshold + its dB value
+			var ty := _yfor(threshold_db)
+			var ocol := Color(1.0, 0.6, 0.1)
+			draw_line(Vector2(0, ty), Vector2(w, ty), ocol, 1.5)
+			var lbl := "%d dB" % int(round(threshold_db))
+			var lw := font.get_string_size(lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+			var lyt := clampf(ty - 4.0, 11.0, h - 2.0)
+			draw_string(font, Vector2(w - lw - 6.0, lyt), lbl,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ocol)
 		# seek track along the very bottom (this IS the play bar), + playback cursor
 		# and the play dot riding on it -- dot and white line share x, so they line
 		# up exactly by construction. Left-click/drag the graph to scrub.
@@ -370,6 +422,7 @@ var _sg_progress_path: String = ""
 var _chop_thread: Thread = null
 var _chop_busy: bool = false
 var _chop_btn: Button
+var _manual_chk: CheckButton           # manual drag-a-region chop mode
 var _chop_spec_path: String = ""
 var _chop_result_path: String = ""
 
@@ -1192,6 +1245,13 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_snd_slider = _add_slider(bar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
 	_snd_lbl = bar.get_child(bar.get_child_count() - 1) as Label
 
+	_manual_chk = CheckButton.new()
+	_manual_chk.text = "Manual region"
+	_manual_chk.tooltip_text = "Ignore the detector: drag ONE region on the waveform " \
+		+ "and Chop/Play just that (right-click clears). Uses the drag's start/stop only."
+	_manual_chk.toggled.connect(_on_manual_toggled)
+	bar.add_child(_manual_chk)
+
 	var playchops := Button.new()
 	playchops.text = "Play chops"
 	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
@@ -1226,6 +1286,7 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "Left-drag: scrub. Right-click/drag: set the chop dB only."
 	_graph.threshold_picked.connect(_on_graph_threshold_picked)
 	_graph.seek_requested.connect(_on_graph_seek)
+	_graph.region_selected.connect(_on_graph_region_selected)
 	root.add_child(_graph)
 	_update_param_labels()
 
@@ -2899,8 +2960,9 @@ func _reload_loudness_cells() -> void:
 
 # ----- play chops: each piece + 1 s of silence, as a single preview stream ---
 func _play_chops() -> void:
-	if typeof(_an_rec) != TYPE_DICTIONARY or _graph.segments.is_empty():
-		_an_status.text = "Analyse a file first — no chops to play."
+	if typeof(_an_rec) != TYPE_DICTIONARY or _effective_segments().is_empty():
+		_an_status.text = ("Drag a region on the waveform first." if _graph.manual_mode
+			else "Analyse a file first — no chops to play.")
 		return
 	var abs := _abs_path(_an_rec)
 	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
@@ -2945,7 +3007,7 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 	var silence := PackedByteArray()
 	silence.resize(int(sr) * frame_bytes)        # 1 s of zeros (= silence, signed PCM)
 	var out := PackedByteArray()
-	for s in _graph.segments:
+	for s in _effective_segments():
 		var a := clampi(int(round(float(s[0]) * _an_frame_s * sr)), 0, total)
 		var b := clampi(int(round(float(s[1]) * _an_frame_s * sr)), 0, total)
 		if b <= a:
@@ -2962,12 +3024,54 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 	return sw
 
 
+# Toggle manual region mode: drag ONE region to chop, no detector logic.
+func _on_manual_toggled(on: bool) -> void:
+	if _graph == null:
+		return
+	_graph.manual_mode = on
+	_graph.sel_a = -1.0
+	_graph.sel_b = -1.0
+	_graph.queue_redraw()
+	_an_status.text = ("Manual region: drag across the waveform to pick what to chop."
+		if on else "Manual region off — back to the detector.")
+
+
+# The selected drag-region as a frame pair, so it flows through the same chop/play
+# path as the detector. Empty if nothing valid is selected.
+func _on_graph_region_selected(a: float, _b: float) -> void:
+	if a < 0.0:
+		_an_status.text = "Selection cleared."
+		return
+	var segs := _effective_segments()
+	if segs.is_empty():
+		return
+	var t0 := float(segs[0][0]) * _an_frame_s
+	var t1 := float(segs[0][1]) * _an_frame_s
+	_an_status.text = "Region %s–%s (%.2f s). Chop to files / Play chops." % [
+		_fmt_time(t0), _fmt_time(t1), t1 - t0]
+
+
+# Segments to chop/play: the manual drag-region (one piece) when manual mode is on
+# and a region is picked, otherwise the detector's segments.
+func _effective_segments() -> Array:
+	if _graph != null and _graph.manual_mode:
+		var lo := minf(_graph.sel_a, _graph.sel_b)
+		var hi := maxf(_graph.sel_a, _graph.sel_b)
+		if _graph.sel_a >= 0.0 and _graph.sel_b >= 0.0 and (hi - lo) > 0.0005:
+			var n := _an_levels.size()
+			return [[lo * n, hi * n]]
+		return []
+	return _graph.segments
+
+
 # ----- chop to files: chop.py writes name_chopped_NNN.wav beside the original --
 func _chop_selected() -> void:
 	if _chop_busy:
 		return
-	if typeof(_an_rec) != TYPE_DICTIONARY or _graph.segments.is_empty():
-		_an_status.text = "Analyse a file first — nothing to chop."
+	var segs := _effective_segments()
+	if typeof(_an_rec) != TYPE_DICTIONARY or segs.is_empty():
+		_an_status.text = ("Drag a region on the waveform first." if _graph.manual_mode
+			else "Analyse a file first — nothing to chop.")
 		return
 	# A single segment is fine to chop: it trims the surrounding silence, writing
 	# just the kept (green) region as one _chopped_001 file.
@@ -2975,9 +3079,9 @@ func _chop_selected() -> void:
 	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
 		_an_status.text = "Chop supports existing WAV files only."
 		return
-	# WYSIWYG: chop exactly the pieces drawn (current segments), in seconds.
+	# WYSIWYG: chop exactly the pieces drawn (current segments / drag region), in seconds.
 	var segs_s: Array = []
-	for s in _graph.segments:
+	for s in segs:
 		segs_s.append([float(s[0]) * _an_frame_s, float(s[1]) * _an_frame_s])
 	# chops inherit the parent's library/supplier/bundle/url in the index
 	var parent := {
@@ -3143,6 +3247,8 @@ func _an_finished() -> void:
 	_an_duration = float(data["duration"])
 	_an_suggested = float(data["suggested_db"])
 	_graph.levels = _an_levels
+	_graph.sel_a = -1.0                 # drop any stale manual selection from the prior file
+	_graph.sel_b = -1.0
 	_apply_saved_or_suggested()        # also recomputes + redraws
 
 

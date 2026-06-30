@@ -137,6 +137,13 @@ for non-obvious gotchas.
   via `_merge_new_records` so the chops appear immediately (no restart, no
   re-scan). "Play chops" (`_play_chops`/`_build_chops_stream`) auditions the
   pieces with 1 s silence between them as one in-memory AudioStreamWAV (8/16-bit).
+  A single piece chops fine (trims surrounding silence -> one `_chopped_001`).
+  **Manual region** mode (`_manual_chk` -> `WaveGraph.manual_mode`): drag ONE
+  region on the graph (`sel_a`/`sel_b` fractions, `region_selected`); right-click
+  clears. No threshold/gap logic — Chop/Play use just the drag's start/stop.
+  `_effective_segments()` returns the manual region (as a frame pair) when on,
+  else `_graph.segments`; both `_chop_selected` and `_build_chops_stream` go
+  through it. Draw colours inside-region green / outside grey, edges yellow.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
