@@ -60,6 +60,12 @@ or:
 
 - **Search** — type words; space-separated terms are AND-matched against
   filename, library, supplier and description.
+- **Semantic search** — tick **Semantic** next to the search box, type a
+  *description* of the sound (e.g. "guns shooting", "creepy monster growl", "rain
+  on a window") and press **Enter**. It ranks files by what they *mean*, not just
+  word match — using a small local sentence model (no LLM, no network at query
+  time). Build the index once: `py indexer/embed.py` (re-run after re-indexing).
+  Results show most-relevant first; the dropdown filters still apply.
 - **Filter** — Bundle / Supplier / Library / Type dropdowns.
 - **Sort** — click any column header (click again to reverse).
 - **Audition** — select a row (autoplay) or double-click; transport bar has

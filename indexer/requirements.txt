@@ -3,3 +3,4 @@ numpy>=1.26
 soundfile>=0.12
 pyloudnorm>=0.1     # integrated LUFS loudness (pulls in scipy)
 pytest>=7          # test suite (indexer/tests)
+fastembed>=0.3      # semantic search (ONNX sentence model, ~50MB on first use)

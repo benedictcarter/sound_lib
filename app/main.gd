@@ -269,6 +269,14 @@ var _chop_result_path: String = ""
 
 var _norm_target_edit: LineEdit       # the 0-10 Level for the "set on selection" action
 
+# semantic search (embeddings via indexer/search.py, threaded)
+var _semantic_chk: CheckButton
+var _sem_thread: Thread = null
+var _sem_busy: bool = false
+var _sem_active: bool = false         # results currently shown in semantic rank order
+var _sem_result_path: String = ""
+var _by_path: Dictionary = {}         # rel_path -> record, for fast rank lookup
+
 # persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
 var _prefs: Dictionary = {}
 var _prefs_path: String = ""
@@ -354,6 +362,7 @@ func _ready() -> void:
 	_sg_progress_path = ProjectSettings.globalize_path("user://chop_progress.json")
 	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
+	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_load_userdata()
 	_load_chopping()
 	_load_loudness()
@@ -489,7 +498,16 @@ func _build_ui() -> void:
 	_search.clear_button_enabled = true
 	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_search.text_changed.connect(_on_search_changed)
+	_search.text_submitted.connect(_on_search_submitted)
 	bar1.add_child(_search)
+
+	_semantic_chk = CheckButton.new()
+	_semantic_chk.text = "Semantic"
+	_semantic_chk.tooltip_text = "Meaning-based search: type a description (e.g. 'guns " \
+		+ "shooting') and press Enter — ranks files by what they SOUND like, not just " \
+		+ "word match. Build the index first: py indexer/embed.py"
+	_semantic_chk.toggled.connect(_on_semantic_toggled)
+	bar1.add_child(_semantic_chk)
 
 	_autoplay = CheckButton.new()
 	_autoplay.text = "Autoplay on select"
@@ -854,6 +872,9 @@ func _load_index() -> void:
 		_status_label.text = "index.json could not be parsed."
 		return
 	_all = data.get("files", [])
+	_by_path = {}
+	for rec in _all:
+		_by_path[String(rec.get("path", ""))] = rec
 	_library_root = String(data.get("library_root", "")).replace("\\", "/")
 	_status_label.text = "Library root: %s   |   indexed %s" % [
 		_library_root, str(data.get("generated", "?"))
@@ -984,7 +1005,24 @@ func _fill_option(opt: OptionButton, field: String, short: bool) -> void:
 #  Filtering / sorting
 # ===========================================================================
 func _on_search_changed(_t: String) -> void:
+	if _semantic_chk and _semantic_chk.button_pressed:
+		return                                     # semantic searches on Enter, not per-key
 	_debounce.start()
+
+
+func _on_search_submitted(text: String) -> void:
+	if _semantic_chk and _semantic_chk.button_pressed:
+		_run_semantic(text.strip_edges())
+
+
+func _on_semantic_toggled(on: bool) -> void:
+	_search.placeholder_text = ("describe a sound, e.g. \"guns shooting\"  (Enter to search)"
+		if on else "filename / library / supplier / description  (space = AND)")
+	if on:
+		if _search.text.strip_edges() != "":
+			_run_semantic(_search.text.strip_edges())
+	else:
+		_apply()                                   # back to keyword filtering
 
 
 func _on_clear() -> void:
@@ -999,22 +1037,26 @@ func _selected_meta(opt: OptionButton) -> String:
 	return String(opt.get_item_metadata(i)) if i >= 0 else ""
 
 
-func _apply() -> void:
-	var tokens := _search.text.strip_edges().to_lower().split(" ", false)
+# The dropdown (Bundle/Supplier/Library/Type) filters, shared by keyword + semantic.
+func _passes_dropdown_filters(rec: Dictionary) -> bool:
 	var f_bundle := _selected_meta(_bundle_opt)
-	var f_supplier := _selected_meta(_supplier_opt)
-	var f_library := _selected_meta(_library_opt)
-	var f_ext := _selected_meta(_ext_opt)
+	if f_bundle != "" and String(rec.get("bundle", "")) != f_bundle:
+		return false
+	if _selected_meta(_supplier_opt) != "" and String(rec.get("supplier", "")) != _selected_meta(_supplier_opt):
+		return false
+	if _selected_meta(_library_opt) != "" and String(rec.get("library", "")) != _selected_meta(_library_opt):
+		return false
+	if _selected_meta(_ext_opt) != "" and String(rec.get("ext", "")) != _selected_meta(_ext_opt):
+		return false
+	return true
 
+
+func _apply() -> void:
+	_sem_active = false
+	var tokens := _search.text.strip_edges().to_lower().split(" ", false)
 	_filtered = []
 	for rec in _all:
-		if f_bundle != "" and String(rec.get("bundle", "")) != f_bundle:
-			continue
-		if f_supplier != "" and String(rec.get("supplier", "")) != f_supplier:
-			continue
-		if f_library != "" and String(rec.get("library", "")) != f_library:
-			continue
-		if f_ext != "" and String(rec.get("ext", "")) != f_ext:
+		if not _passes_dropdown_filters(rec):
 			continue
 		if tokens.size() > 0:
 			var hay := (
@@ -1035,6 +1077,60 @@ func _apply() -> void:
 
 	_sort_filtered()
 	_populate_tree()
+
+
+# ----- semantic search (indexer/search.py embeds the query, ranks by cosine) --
+func _run_semantic(query: String) -> void:
+	if query == "":
+		_apply()
+		return
+	if not FileAccess.file_exists(ProjectSettings.globalize_path("res://embeddings.npz")):
+		_status_label.text = "No semantic index yet — build it once: py indexer/embed.py"
+		return
+	if _sem_busy:
+		return
+	_sem_busy = true
+	_status_label.text = "Semantic search: \"%s\" …" % query
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/search.py").simplify_path()
+	if FileAccess.file_exists(_sem_result_path):
+		DirAccess.remove_absolute(_sem_result_path)
+	_sem_thread = Thread.new()
+	_sem_thread.start(_sem_run.bind(script, query, _sem_result_path))
+
+
+func _sem_run(script: String, query: String, out: String) -> void:
+	var output: Array = []
+	var args := [script, query, out, "500"]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_sem_finished")
+
+
+func _sem_finished() -> void:
+	_sem_busy = false
+	if _sem_thread:
+		_sem_thread.wait_to_finish()
+		_sem_thread = null
+	if not FileAccess.file_exists(_sem_result_path):
+		_status_label.text = "Semantic search failed (no output). Is python + fastembed installed?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sem_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		_status_label.text = "Semantic search error: %s" % (
+			d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		return
+	var paths: Array = d.get("paths", [])
+	_filtered = []
+	for p in paths:
+		var rec: Variant = _by_path.get(String(p))
+		if typeof(rec) == TYPE_DICTIONARY and _passes_dropdown_filters(rec):
+			_filtered.append(rec)              # keep the search.py rank order
+	_sem_active = true
+	_populate_tree()                           # ranked, no column sort
+	_status_label.text = "Semantic results for \"%s\" — most relevant first (%d)" % [
+		String(d.get("query", "")), _filtered.size()]
 
 
 func _sort_value(rec: Dictionary, col: int) -> Variant:
@@ -2611,6 +2707,8 @@ func _exit_tree() -> void:
 		_sg_thread.wait_to_finish()
 	if _chop_thread and _chop_thread.is_started():
 		_chop_thread.wait_to_finish()
+	if _sem_thread and _sem_thread.is_started():
+		_sem_thread.wait_to_finish()
 
 
 func _an_finished() -> void:

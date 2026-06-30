@@ -1,6 +1,7 @@
 # --- Generated index (derived data, can be rebuilt by indexer) ---
 /index.json
 /app/index.json
+/app/embeddings.npz
 # atomic-write temp/backup artifacts (userdata/chopping/loudness/index)
 *.json.tmp
 *.json.bak
