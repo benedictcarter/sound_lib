@@ -573,10 +573,19 @@ func _data_dir() -> String:
 #  UI construction
 # ===========================================================================
 func _build_ui() -> void:
+	# top-level split: everything on the left, the Keywords panel as a full-height
+	# (top-to-bottom) column on the right.
+	var outer := HSplitContainer.new()
+	outer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(outer)
+
 	var root := VBoxContainer.new()
-	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_theme_constant_override("separation", 6)
-	add_child(root)
+	outer.add_child(root)
+	outer.add_child(_build_keyword_panel())        # right column, full height
+	outer.set_deferred("split_offset", 5000)       # left takes the slack
 
 	# --- toolbar row: library folder (top-left) + path ------------------
 	var barlib := HBoxContainer.new()
@@ -595,18 +604,10 @@ func _build_ui() -> void:
 	_lib_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.66))
 	barlib.add_child(_lib_label)
 
-	# --- toolbar row: SEMANTIC search box (left) + Update index (right) ---
-	# No label — the placeholder describes it; left edge aligns with the Filter box.
+	# --- toolbar row: Update index (left) + SEMANTIC search box -----------
 	var bar0 := HBoxContainer.new()
 	bar0.add_theme_constant_override("separation", 8)
 	root.add_child(bar0)
-
-	_sem_edit = LineEdit.new()
-	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
-	_sem_edit.clear_button_enabled = true
-	_sem_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_sem_edit.text_submitted.connect(_on_semantic_submitted)
-	bar0.add_child(_sem_edit)
 
 	_emb_btn = Button.new()
 	_emb_btn.text = "Update semantic index"
@@ -614,6 +615,13 @@ func _build_ui() -> void:
 		+ "(e.g. new chops). Run once before first use; quick afterwards."
 	_emb_btn.pressed.connect(_update_embeddings)
 	bar0.add_child(_emb_btn)
+
+	_sem_edit = LineEdit.new()
+	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
+	_sem_edit.clear_button_enabled = true
+	_sem_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sem_edit.text_submitted.connect(_on_semantic_submitted)
+	bar0.add_child(_sem_edit)
 
 	# --- toolbar row: text Filter box (left-aligned with the semantic box) --
 	var bar1 := HBoxContainer.new()
@@ -641,15 +649,14 @@ func _build_ui() -> void:
 	clear.pressed.connect(_on_clear)
 	bar2.add_child(clear)
 
-	var fhint := Label.new()
-	fhint.text = "  ↓ each column filters by its own type (text / tick-boxes / min–max)"
-	fhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
-	bar2.add_child(fhint)
-
-	_count_label = Label.new()
-	_count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_count_label = Label.new()                     # immediately right of Clear filters
 	bar2.add_child(_count_label)
+
+	var fhint := Label.new()
+	fhint.text = "    ↓ each column filters by its own type (text / tick-boxes / min–max)"
+	fhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
+	fhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar2.add_child(fhint)
 
 	# --- table ----------------------------------------------------------
 	_tree = Tree.new()
@@ -678,27 +685,18 @@ func _build_ui() -> void:
 	_tree.gui_input.connect(_on_tree_gui_input)
 	_tree.focus_exited.connect(_commit_cell_edit)   # clicking away commits a type-over
 
-	# --- table + keyword panel (split) ----------------------------------
-	var split := HSplitContainer.new()
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_child(split)
-
-	# left pane = per-column filter header ABOVE the tree, so it shares the tree's
-	# column widths / horizontal scroll and lines up over the columns.
-	var left := VBoxContainer.new()
-	left.add_theme_constant_override("separation", 0)
-	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# --- table: per-column filter header ABOVE the tree (shares the tree's column
+	#     widths / horizontal scroll so the filters line up over the columns) ---
+	var tablebox := VBoxContainer.new()
+	tablebox.add_theme_constant_override("separation", 0)
+	tablebox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tablebox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_filter_header = Control.new()
 	_filter_header.custom_minimum_size = Vector2(0, 28)
 	_filter_header.clip_contents = true
-	left.add_child(_filter_header)
-	left.add_child(_tree)
-	split.add_child(left)
-	split.add_child(_build_keyword_panel())
-	# big offset -> table takes the slack, keyword panel rests at its min width
-	split.set_deferred("split_offset", 5000)
+	tablebox.add_child(_filter_header)
+	tablebox.add_child(_tree)
+	root.add_child(tablebox)
 
 	_build_num_popup()
 
