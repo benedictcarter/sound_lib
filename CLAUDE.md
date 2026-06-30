@@ -142,12 +142,18 @@ for non-obvious gotchas.
   re-scan). "Play chops" (`_play_chops`/`_build_chops_stream`) auditions the
   pieces with 1 s silence between them as one in-memory AudioStreamWAV (8/16-bit).
   A single piece chops fine (trims surrounding silence -> one `_chopped_001`).
-  **Manual region** mode (`_manual_chk` -> `WaveGraph.manual_mode`): drag ONE
-  region on the graph (`sel_a`/`sel_b` fractions, `region_selected`); right-click
-  clears. No threshold/gap logic — Chop/Play use just the drag's start/stop.
-  `_effective_segments()` returns the manual region (as a frame pair) when on,
-  else `_graph.segments`; both `_chop_selected` and `_build_chops_stream` go
-  through it. Draw colours inside-region green / outside grey, edges yellow.
+  **Manual region** is always-on (no toggle): **left-click-drag** on the graph
+  selects ONE region (`sel_a`/`sel_b` fractions; `region_selected` live,
+  `region_committed` on release; a plain left-click clears back to the detector).
+  **Right-click-drag** sets the height (silence threshold). Seek is on the strip
+  below (the graph no longer seeks). `_graph.has_manual_sel()` gates everything:
+  `_effective_segments()` returns the region (one frame pair) when a selection is
+  active, else `_graph.segments`; both `_chop_selected` and `_build_chops_stream`
+  go through it (WYSIWYG with the green). Draw: inside-region green / outside grey,
+  edges yellow (else detector segments green + blue boundaries); threshold line
+  always shown. While a preview is auditioning (`_playing_chops`), committing a new
+  region re-runs `_play_chops` (`_on_region_committed`) so a LOOPING preview follows
+  the new selection live.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
