@@ -418,6 +418,12 @@ var _chop_btn: Button
 var _playing_chops: bool = false       # currently auditioning the chops/region preview
 var _chop_spec_path: String = ""
 var _chop_result_path: String = ""
+var _loop_thread: Thread = null
+var _loop_busy: bool = false
+var _loop_btn: Button
+var _xfade_edit: LineEdit               # crossfade length (ms) for Make loop
+var _loop_spec_path: String = ""
+var _loop_result_path: String = ""
 
 
 # semantic search (its own bar above the text filter; ranks via indexer/search.py)
@@ -535,6 +541,8 @@ func _ready() -> void:
 	_sg_progress_path = ProjectSettings.globalize_path("user://chop_progress.json")
 	_chop_spec_path = ProjectSettings.globalize_path("user://chop_spec.json")
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
+	_loop_spec_path = ProjectSettings.globalize_path("user://loop_spec.json")
+	_loop_result_path = ProjectSettings.globalize_path("user://loop_result.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
@@ -1251,6 +1259,24 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "original (the original is KEPT). Re-run the indexer to see them."
 	_chop_btn.pressed.connect(_chop_selected)
 	bar.add_child(_chop_btn)
+
+	_loop_btn = Button.new()
+	_loop_btn.text = "Make loop"
+	_loop_btn.tooltip_text = "Bake a SEAMLESS loop of the selected region (green) as " \
+		+ "name_loop.wav next to the original — equal-power crossfade so it wraps " \
+		+ "with no click/seam. Original kept. Set the crossfade (ms) at right."
+	_loop_btn.pressed.connect(_make_loop)
+	bar.add_child(_loop_btn)
+
+	var xlab := Label.new()
+	xlab.text = "Xfade ms"
+	bar.add_child(xlab)
+	_xfade_edit = LineEdit.new()
+	_xfade_edit.text = "100"
+	_xfade_edit.custom_minimum_size = Vector2(48, 0)
+	_xfade_edit.tooltip_text = "Crossfade length in milliseconds for Make loop " \
+		+ "(longer = smoother but blends more of the ends)."
+	bar.add_child(_xfade_edit)
 
 	_sg_btn = Button.new()
 	_sg_btn.text = "Analyse audio (chops + loudness)"
@@ -3142,6 +3168,84 @@ func _chop_finished() -> void:
 	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
 	_an_status.text = "Chopped into %d pieces — added to the library (original kept).%s" % [
 		recs.size(), tag_note]
+
+
+# ----- make loop: loopify.py bakes a seamless name_loop.wav beside the original --
+func _make_loop() -> void:
+	if _loop_busy:
+		return
+	var segs := _effective_segments()
+	if typeof(_an_rec) != TYPE_DICTIONARY or segs.is_empty():
+		_an_status.text = "Drag a region (or analyse a file) first — nothing to loop."
+		return
+	if segs.size() > 1 and not _graph.has_manual_sel():
+		_an_status.text = "Pick ONE region to loop: drag it on the waveform."
+		return
+	var abs := _abs_path(_an_rec)
+	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
+		_an_status.text = "Make loop supports existing WAV files only."
+		return
+	var seg: Array = segs[0]                    # the green region (or the single piece)
+	var start_s := float(seg[0]) * _an_frame_s
+	var end_s := float(seg[1]) * _an_frame_s
+	var xfade_ms := maxf(0.0, _xfade_edit.text.strip_edges().to_float())
+	# crossfade can't exceed half the region, or loopify clamps it anyway
+	var spec := {
+		"start_s": start_s, "end_s": end_s,
+		"crossfade_ms": xfade_ms, "curve": "equal_power",
+		"parent": {
+			"bundle": _an_rec.get("bundle", ""),
+			"library": _an_rec.get("library", ""),
+			"supplier": _an_rec.get("supplier", ""),
+			"url": _an_rec.get("url", ""),
+		},
+	}
+	var f := FileAccess.open(_loop_spec_path, FileAccess.WRITE)
+	if f == null:
+		_an_status.text = "Could not write loop spec."
+		return
+	f.store_string(JSON.stringify(spec))
+	f.close()
+	if FileAccess.file_exists(_loop_result_path):
+		DirAccess.remove_absolute(_loop_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/loopify.py").simplify_path()
+	_loop_busy = true
+	_loop_btn.disabled = true
+	_an_status.text = "Baking seamless loop (%.0f ms crossfade)…" % xfade_ms
+	_loop_thread = Thread.new()
+	_loop_thread.start(_loop_run.bind(script, abs, _loop_spec_path, _loop_result_path))
+
+
+func _loop_run(script: String, audio: String, spec: String, result: String) -> void:
+	var output: Array = []
+	var args := [script, audio, spec, result]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_loop_finished")
+
+
+func _loop_finished() -> void:
+	_loop_busy = false
+	if _loop_thread:
+		_loop_thread.wait_to_finish()
+		_loop_thread = null
+	_loop_btn.disabled = false
+	if not FileAccess.file_exists(_loop_result_path):
+		_an_status.text = "Make loop failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_loop_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		_an_status.text = "Make loop error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		return
+	var recs: Array = d.get("records", [])
+	var ptags := _get_tags(_an_rec) if typeof(_an_rec) == TYPE_DICTIONARY else ""
+	_inherit_tags_to(recs, ptags)               # the loop inherits the parent's tags
+	_merge_new_records(recs)
+	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
+	_an_status.text = "Seamless loop added (%.2fs, %.0f ms xfade) — original kept.%s" % [
+		float(d.get("out_duration", 0.0)), float(d.get("xfade_ms", 0.0)), tag_note]
 
 
 # Give each new record (e.g. fresh chops) the parent's tags in userdata, keyed by

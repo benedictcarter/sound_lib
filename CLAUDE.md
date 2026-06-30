@@ -154,6 +154,16 @@ for non-obvious gotchas.
   always shown. While a preview is auditioning (`_playing_chops`), committing a new
   region re-runs `_play_chops` (`_on_region_committed`) so a LOOPING preview follows
   the new selection live.
+- **Make loop** (`_loop_btn`/`_make_loop`): bakes a SEAMLESS loop of the selected
+  region (green) as `<stem>_loop<ext>` beside the original via `indexer/loopify.py`
+  (equal-power overlap-add crossfade: tail blended back over head so the file wraps
+  with no click/seam; `crossfade_loop()` is golden-tested — exact sample-adjacent
+  wrap seam + constant power). Crossfade length is the `_xfade_edit` ms field
+  (default 100). Output length = region − crossfade. Keeps 24-bit subtype; reuses
+  `chop._add_to_index` (no re-scan); `_loop_finished` merges + inherits tags like
+  chops. Threaded `py loopify.py <audio> <spec.json> <result.json>` (spec:
+  start_s/end_s/crossfade_ms/curve/parent). Industry-standard primitive; an
+  autocorrelation/zero-cross "Suggest loop" analyser is the planned next layer.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.

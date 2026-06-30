@@ -100,6 +100,31 @@ def test_suggest_threshold_is_sane():
     assert -90.0 < th < 0.0
 
 
+# ---- seamless loop crossfade ----------------------------------------------
+def test_crossfade_loop_wraps_seamlessly():
+    from loopify import crossfade_loop
+    n, l = 2000, 200
+    rng = np.random.default_rng(0)
+    region = rng.standard_normal((n, 2))
+    out = crossfade_loop(region, l, "equal_power")
+    assert out.shape == (n - l, 2)
+    # the wrap is sample-adjacent in the source: out[0]==region[n-l], out[-1]==region[n-l-1]
+    assert np.allclose(out[0], region[n - l])
+    assert np.allclose(out[-1], region[n - l - 1])
+
+
+def test_crossfade_loop_equal_power_is_constant_power():
+    t = np.arange(256) / 256.0
+    g_in, g_out = np.sin(t * np.pi / 2), np.cos(t * np.pi / 2)
+    assert np.allclose(g_in**2 + g_out**2, 1.0)
+
+
+def test_crossfade_loop_zero_xfade_is_identity():
+    from loopify import crossfade_loop
+    region = np.linspace(0, 1, 500).reshape(-1, 1)
+    assert np.array_equal(crossfade_loop(region, 0, "equal_power"), region)
+
+
 # ---- atomic JSON writer ---------------------------------------------------
 def test_write_json_atomic_overwrites_cleanly(tmp_path):
     p = tmp_path / "x.json"
