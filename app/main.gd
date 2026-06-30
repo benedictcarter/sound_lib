@@ -139,7 +139,12 @@ class WaveGraph extends Control:
 					queue_redraw()
 					accept_event()
 			elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+				if has_manual_sel():               # right-click drops back to auto/detector
+					sel_a = -1.0
+					sel_b = -1.0
+					region_selected.emit(-1.0, -1.0)
 				threshold_picked.emit(_db_at_y(event.position.y))
+				queue_redraw()
 				accept_event()
 		elif event is InputEventMouseMotion:
 			if (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
@@ -1263,8 +1268,9 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_graph = WaveGraph.new()
 	_graph.custom_minimum_size = Vector2(0, 120)
 	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_graph.tooltip_text = "Left-click-drag: select a region to chop/play (click clears). " \
-		+ "Right-click-drag: set the height (silence threshold). Seek on the strip below."
+	_graph.tooltip_text = "Left-click-drag: select a region to chop/play. " \
+		+ "Right-click-drag: set the height (silence threshold) — also returns to " \
+		+ "auto/detector. Seek on the strip below."
 	_graph.threshold_picked.connect(_on_graph_threshold_picked)
 	_graph.seek_requested.connect(_on_graph_seek)
 	_graph.region_selected.connect(_on_graph_region_selected)
