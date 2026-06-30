@@ -211,21 +211,24 @@ class SeekBar extends Control:
 			draw_circle(Vector2(px, cy), 6.0, Color(1, 1, 1, 0.95))
 
 
-## Draws the column-resize dividers (white line + ◄► arrows) over the filter
-## header at each column boundary. Purely visual (mouse_filter = IGNORE); the
-## actual drag is handled on the tree header just below.
-class DividerMarks extends Control:
-	var edges := PackedFloat32Array()
+## A draggable column-resize grabber: a thin white strip with ◄► arrows that
+## spans BOTH the filter row and the sort/title row at one column boundary. Drags
+## are forwarded to main (gui_input signal); rendering is identical for every edge.
+class ColGrabber extends Control:
+	var col := -1
+
+	func _ready() -> void:
+		mouse_default_cursor_shape = Control.CURSOR_HSIZE
 
 	func _draw() -> void:
-		var cy := size.y - 8.0
-		var c := Color(1, 1, 1, 0.85)
-		for x in edges:
-			draw_line(Vector2(x, 1.0), Vector2(x, size.y - 1.0), Color(1, 1, 1, 0.5), 1.0)
-			draw_colored_polygon(PackedVector2Array([
-				Vector2(x - 3.0, cy), Vector2(x - 7.0, cy - 3.0), Vector2(x - 7.0, cy + 3.0)]), c)
-			draw_colored_polygon(PackedVector2Array([
-				Vector2(x + 3.0, cy), Vector2(x + 7.0, cy - 3.0), Vector2(x + 7.0, cy + 3.0)]), c)
+		var cx := size.x * 0.5
+		var cy := size.y * 0.5
+		var c := Color(1, 1, 1, 0.9)
+		draw_line(Vector2(cx, 2.0), Vector2(cx, size.y - 2.0), Color(1, 1, 1, 0.5), 1.0)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(cx - 3.0, cy), Vector2(cx - 7.0, cy - 3.0), Vector2(cx - 7.0, cy + 3.0)]), c)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(cx + 3.0, cy), Vector2(cx + 7.0, cy - 3.0), Vector2(cx + 7.0, cy + 3.0)]), c)
 
 
 ## Two-knob range slider for numeric column filters. Maps over the column's actual
@@ -399,7 +402,7 @@ var _lib_label: Label                 # library-root path shown top-left
 var _vol_slider: HSlider
 # per-column filter header (aligned above the columns; type per column)
 var _filter_header: Control
-var _div_marks: DividerMarks           # white ◄► resize markers over column edges
+var _grabbers: Array = []              # ColGrabber pool: white ◄► resize strips per edge
 var _colfilters: Dictionary = {}      # col -> the filter control node
 var _filter_text: Dictionary = {}     # col -> lowercased substring (text columns)
 var _filter_set: Dictionary = {}      # col -> {value:true} allow-set (tick columns)
@@ -707,11 +710,21 @@ func _build_ui() -> void:
 	_filter_header.custom_minimum_size = Vector2(0, 28)
 	_filter_header.clip_contents = true
 	tablebox.add_child(_filter_header)
-	_div_marks = DividerMarks.new()                # white ◄► markers over column edges
-	_div_marks.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_filter_header.add_child(_div_marks)           # added last -> drawn on top
 	tablebox.add_child(_tree)
 	root.add_child(tablebox)
+
+	# Draggable resize grabbers (white ◄► strips). One per column edge, floated on
+	# top of the whole window so each spans BOTH the filter row and the sort/title
+	# row; positioned every frame in _layout_filter_header. Children of self so the
+	# 8px strips draw above the table and capture the press at an edge.
+	_grabbers.clear()
+	for i in range(COL_COUNT):
+		var g := ColGrabber.new()
+		g.col = -1
+		g.visible = false
+		g.gui_input.connect(_on_grabber_input.bind(g))
+		add_child(g)
+		_grabbers.append(g)
 
 	_build_num_popup()
 
@@ -1049,21 +1062,42 @@ func _layout_filter_header() -> void:
 	if first == null:
 		return
 	var h := _filter_header.size.y
-	var edges := PackedFloat32Array()
+	var edge_cols := PackedInt32Array()              # columns that have a visible edge
+	var edge_xs := PackedFloat32Array()              # their right-edge x (tree/header-local)
 	for col in COL_COUNT:
 		var r := _tree.get_item_area_rect(first, col)   # exact column x + width
 		var ctrl: Variant = _colfilters.get(col)
 		if ctrl != null:
+			# leave an 8px gap at the right (the divider side) so the grabber strip
+			# there is clear of the filter control beneath it.
 			ctrl.position = Vector2(r.position.x, 2.0)
-			ctrl.size = Vector2(maxf(8.0, r.size.x - 2.0), h - 4.0)
+			ctrl.size = Vector2(maxf(8.0, r.size.x - 8.0), h - 4.0)
 		var ex := r.end.x                                # right divider of this column
 		if ex > 2.0 and ex < _filter_header.size.x - 1.0:
-			edges.append(ex)
-	if _div_marks:
-		_div_marks.position = Vector2.ZERO
-		_div_marks.size = _filter_header.size
-		_div_marks.edges = edges
-		_div_marks.queue_redraw()
+			edge_cols.append(col)
+			edge_xs.append(ex)
+
+	# Float each grabber over its column edge, spanning the filter row + the
+	# sort/title row, in self-local space (grabbers are children of self).
+	var origin := global_position
+	var fhg := _filter_header.global_position
+	var top := fhg.y - origin.y
+	var span := _filter_header.size.y + _header_height()
+	var gi := 0
+	for k in range(edge_xs.size()):
+		if gi >= _grabbers.size():
+			break
+		var g: ColGrabber = _grabbers[gi]
+		g.col = edge_cols[k]
+		g.position = Vector2(fhg.x + edge_xs[k] - origin.x - 4.0, top)
+		g.size = Vector2(8.0, span)
+		g.visible = true
+		g.queue_redraw()
+		gi += 1
+	while gi < _grabbers.size():
+		_grabbers[gi].visible = false
+		_grabbers[gi].col = -1
+		gi += 1
 
 
 # A column's numeric value for filtering — NaN when the row has no value there
@@ -1742,8 +1776,29 @@ func _on_tree_item_edited() -> void:
 
 
 # ===========================================================================
-#  Column resizing — drag a divider in the header row (Tree has no native one)
+#  Column resizing — drag a white ◄► grabber that spans the filter + sort rows
+#  (or a divider in the title row). Tracking runs in _process off the global
+#  mouse, so the thin grabber strips don't lose the drag when the cursor leaves.
 # ===========================================================================
+
+# Start dragging column `col`'s right edge. Snapshot the global mouse x + width;
+# _process updates the width while the button is held, and ends on release.
+func _begin_resize(col: int) -> void:
+	_resize_col = col
+	_resize_start_x = get_global_mouse_position().x
+	_resize_start_w = _col_w[col]
+	_suppress_title_click = true                   # this drag isn't a sort click
+
+
+# A grabber strip was pressed -> begin resizing its column.
+func _on_grabber_input(event: InputEvent, g: ColGrabber) -> void:
+	if g.col < 0:
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		_begin_resize(g.col)
+		g.accept_event()
+
+
 func _header_height() -> float:
 	if _header_h <= 0.0:
 		var root := _tree.get_root()
@@ -1829,9 +1884,7 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 		if event.pressed:
 			var c := _divider_at(event.position)
 			if c >= 0:
-				_resize_col = c
-				_resize_start_x = event.position.x
-				_resize_start_w = _col_w[c]
+				_begin_resize(c)                   # tracking continues in _process
 				_tree.accept_event()
 			elif event.position.y > _header_height():
 				var it := _tree.get_item_at_position(event.position)
@@ -1852,9 +1905,6 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 						_apply_drag_range(it, it)
 						_tree.accept_event()
 		else:                                  # released
-			if _resize_col >= 0:
-				_resize_col = -1
-				_tree.accept_event()
 			_drag_sel = false
 			_drag_additive = false
 			_drag_toggle = false
@@ -1863,13 +1913,7 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 			_drag_base = []
 			_drag_base_col = {}
 	elif event is InputEventMouseMotion:
-		if _resize_col >= 0:
-			var w := maxi(COL_MIN_W, _resize_start_w + int(event.position.x - _resize_start_x))
-			_col_w[_resize_col] = w
-			_tree.set_column_custom_minimum_width(_resize_col, w)
-			_suppress_title_click = true       # this drag isn't a sort click
-			_tree.accept_event()
-		elif _drag_sel and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+		if _drag_sel and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
 			var it := _tree.get_item_at_position(event.position)
 			if it != null and it != _drag_last and _drag_anchor != null:
 				_drag_last = it
@@ -2103,6 +2147,16 @@ func _input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	_update_rating_hover()
+	# live column resize, driven off the global mouse so the 8px grabber strips
+	# (and the title-row divider) don't drop the drag when the cursor moves off.
+	if _resize_col >= 0:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			var w := maxi(COL_MIN_W, _resize_start_w + int(get_global_mouse_position().x - _resize_start_x))
+			if w != _col_w[_resize_col]:
+				_col_w[_resize_col] = w
+				_tree.set_column_custom_minimum_width(_resize_col, w)
+		else:
+			_resize_col = -1
 	_layout_filter_header()                        # keep filters aligned over columns
 	# playback cursor + play dot on the visualiser, when the loaded file is the one
 	# shown in the analyser (playing OR paused).
