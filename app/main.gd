@@ -1184,7 +1184,7 @@ func _update_embeddings() -> void:
 		DirAccess.remove_absolute(_emb_progress_path)
 	_emb_busy = true
 	_emb_btn.disabled = true
-	_status_label.text = "Scanning for new files…"   # until embed.py reports a total
+	_emb_btn.text = "Scanning for new files…"        # progress shows on the button
 	_emb_thread = Thread.new()
 	_emb_thread.start(_emb_run.bind(script, _emb_progress_path))
 	_emb_poll.start()
@@ -1200,12 +1200,12 @@ func _emb_run(script: String, progress: String) -> void:
 
 
 func _emb_tick() -> void:
-	# until the progress file exists with a total, we're still scanning -> leave the
-	# "Scanning for new files…" status alone.
+	# until the progress file exists with a total we're still scanning -> the button
+	# keeps "Scanning for new files…"; then it shows done / new.
 	if FileAccess.file_exists(_emb_progress_path):
 		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
 		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
-			_status_label.text = "Embedding new files… %d / %d new" % [
+			_emb_btn.text = "Embedding %d / %d new…" % [
 				int(d.get("analysed", 0)), int(d.get("total", 0))]
 
 
@@ -1216,6 +1216,7 @@ func _emb_finished() -> void:
 		_emb_thread = null
 	_emb_busy = false
 	_emb_btn.disabled = false
+	_emb_btn.text = "Update semantic index"          # restore the idle label
 	var n := 0
 	if FileAccess.file_exists(_emb_progress_path):
 		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
@@ -1695,9 +1696,14 @@ func _play_selected() -> void:
 	if not FileAccess.file_exists(abs):
 		_now_label.text = "File not found (library moved?): %s" % abs
 		return
+	var ch := int(rec.get("channels", 0)) if rec.get("channels") != null else 0
+	if ch > 2:
+		_now_label.text = "Can't preview: %d-channel WAV (ambisonic/surround). The player handles mono/stereo only — %s" % [
+			ch, String(rec.get("filename", ""))]
+		return
 	var stream: AudioStreamWAV = AudioStreamWAV.load_from_file(abs)
 	if stream == null:
-		_now_label.text = "Could not load WAV: %s" % abs
+		_now_label.text = "Could not load WAV (unsupported format — e.g. float, or too large): %s" % abs
 		return
 	_set_stream_loop(stream)                   # honour the Loop toggle
 	_player.stream = stream
