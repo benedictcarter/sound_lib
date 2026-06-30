@@ -3001,8 +3001,10 @@ func _play_chops() -> void:
 	_playing_rec = null          # preview timeline != original; skip cursor + play-count
 	_playing_item = null
 	_play_btn.text = "Pause"
-	_now_label.text = "Playing %d chops (1 s gaps):  %s" % [
-		_graph.segments.size(), String(_an_rec.get("filename", ""))]
+	var npieces := _effective_segments().size()    # WYSIWYG: the GREEN pieces actually played
+	var fn := String(_an_rec.get("filename", ""))
+	_now_label.text = ("Playing region:  %s" % fn if (_graph.manual_mode and npieces == 1)
+		else "Playing %d chops (1 s gaps):  %s" % [npieces, fn])
 
 
 # Concatenate the loaded WAV's pieces (segment frames -> samples) with 1 s of
