@@ -353,7 +353,6 @@ var _chop_btn: Button
 var _chop_spec_path: String = ""
 var _chop_result_path: String = ""
 
-var _norm_target_edit: LineEdit       # the 0-10 Level for the "set on selection" action
 
 # semantic search (its own bar above the text filter; ranks via indexer/search.py)
 var _sem_edit: LineEdit               # the semantic query box
@@ -598,11 +597,17 @@ func _build_ui() -> void:
 	openbtn.pressed.connect(_on_reveal)
 	barlib.add_child(openbtn)
 
-	_lib_label = Label.new()
+	_lib_label = Label.new()                       # the library-root path
 	_lib_label.clip_text = true
-	_lib_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_lib_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.66))
 	barlib.add_child(_lib_label)
+
+	barlib.add_child(VSeparator.new())
+	_status_label = Label.new()                    # status / messages, top row
+	_status_label.clip_text = true
+	_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.66))
+	barlib.add_child(_status_label)
 
 	# --- toolbar row: Update index (left) + SEMANTIC search box -----------
 	var bar0 := HBoxContainer.new()
@@ -744,43 +749,7 @@ func _build_ui() -> void:
 	pbar.add_child(_vol_slider)
 	_on_volume_changed(0.9)
 
-	# Seeking now lives in the visualiser directly above (left-click/drag to
-	# scrub); its play dot and white cursor line up exactly. The hint fills the
-	# rest of this transport row.
-	var seekhint := Label.new()
-	seekhint.text = "  ↑ drag the seek strip to move position (chop dB unchanged)"
-	seekhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
-	seekhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	pbar.add_child(seekhint)
-
-	# --- level / normalize row ------------------------------------------
-	var lbar := HBoxContainer.new()
-	lbar.add_theme_constant_override("separation", 6)
-	root.add_child(lbar)
-
-	var nlab := Label.new()
-	nlab.text = "Set Level"
-	lbar.add_child(nlab)
-	_norm_target_edit = LineEdit.new()
-	_norm_target_edit.text = "7"
-	_norm_target_edit.custom_minimum_size = Vector2(48, 0)
-	_norm_target_edit.tooltip_text = "Loudness on the 0-10 scale (10 = loudest, 5 = half as loud, 0 = silence)."
-	lbar.add_child(_norm_target_edit)
-	var dbfs_lab := Label.new()
-	dbfs_lab.text = "(0-10)"
-	lbar.add_child(dbfs_lab)
-	var norm_btn := Button.new()
-	norm_btn.text = "on selection"
-	norm_btn.tooltip_text = "Set this Level on the selected rows (and recompute " \
-		+ "their Gain dB to hit it, capped so nothing clips). Needs measured Loudness."
-	norm_btn.pressed.connect(_normalize_selection)
-	lbar.add_child(norm_btn)
-
-	var nhint := Label.new()
-	nhint.text = "  e.g. explosion 10, gunfire 6, footstep 3"
-	nhint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	nhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	lbar.add_child(nhint)
+	# (Level is set directly in the table's Level column / bulk type-over.)
 
 	# --- rating + now-playing row ---------------------------------------
 	# Rating controls first; the expanding now-playing label goes LAST so it
@@ -817,10 +786,7 @@ func _build_ui() -> void:
 	_now_label.clip_text = true
 	nbar.add_child(_now_label)
 
-	# --- status ---------------------------------------------------------
-
-	_status_label = Label.new()
-	root.add_child(_status_label)
+	# (status label lives on the top "Open folder" row — built there)
 
 	# debounce for search typing
 	_debounce = Timer.new()
@@ -1243,10 +1209,8 @@ func _load_index() -> void:
 		_by_path[String(rec.get("path", ""))] = rec
 	_library_root = String(data.get("library_root", "")).replace("\\", "/")
 	if _lib_label:
-		_lib_label.text = _library_root
-	_status_label.text = "Library root: %s   |   indexed %s" % [
-		_library_root, str(data.get("generated", "?"))
-	]
+		_lib_label.text = _library_root            # path shown next to Open folder
+	_status_label.text = "indexed %s" % str(data.get("generated", "?"))
 	_build_filter_controls()
 	_build_keywords()
 	_apply()
@@ -2848,50 +2812,6 @@ func _reload_loudness_cells() -> void:
 		if typeof(rec) == TYPE_DICTIONARY:
 			_apply_loudness_cell(it, rec)
 		it = it.get_next()
-
-
-# Set the Level (0-10) on the selected rows (and recompute their Gain dB to hit
-# that loudness, capped so nothing clips).
-func _normalize_selection() -> void:
-	var ttxt := _norm_target_edit.text.strip_edges()
-	if not ttxt.is_valid_float():
-		_status_label.text = "Level must be a number 0-10 (e.g. 7)."
-		return
-	var lvl := clampf(ttxt.to_float(), 0.0, LEVEL_MAX)
-	var items := []
-	var it := _tree.get_next_selected(null)
-	while it != null:
-		if typeof(it.get_metadata(0)) == TYPE_DICTIONARY:
-			items.append(it)
-		it = _tree.get_next_selected(it)
-	if items.is_empty():
-		_status_label.text = "Select some rows first, then set the Level."
-		return
-	var n := 0
-	var unmeasured := 0
-	var capped := 0
-	for row in items:
-		var rec: Dictionary = row.get_metadata(0)
-		var key := String(rec.get("path", ""))
-		var ud: Dictionary = _userdata.get(key, {})
-		ud["level"] = lvl                         # persistent level (saved once below)
-		ud.erase("target_db")
-		_userdata[key] = ud
-		row.set_text(COL_LEVEL, _fmt_level(lvl))
-		var r := _apply_target_to_gain(rec, row)
-		if r == -1:
-			unmeasured += 1
-		elif r == 1:
-			n += 1
-			if _target_gain(rec)[1]:
-				capped += 1
-	_save_userdata()
-	var msg := "Level %s set on %d row%s." % [_fmt_level(lvl), items.size(), "" if items.size() == 1 else "s"]
-	if capped > 0:
-		msg += "  %d capped to avoid clipping." % capped
-	if unmeasured > 0:
-		msg += "  %d not measured yet (run Analyse audio, then it applies)." % unmeasured
-	_status_label.text = msg
 
 
 # ----- play chops: each piece + 1 s of silence, as a single preview stream ---
