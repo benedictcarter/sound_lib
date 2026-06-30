@@ -210,6 +210,87 @@ class SeekBar extends Control:
 			draw_line(Vector2(px, 2), Vector2(px, h - 2), Color(1, 1, 1, 0.5), 1.0)
 			draw_circle(Vector2(px, cy), 6.0, Color(1, 1, 1, 0.95))
 
+
+## Two-knob range slider for numeric column filters. Maps over the column's actual
+## data min..max (optionally log scale for wide positive ranges); drag either knob.
+class RangeSlider extends Control:
+	signal changed(lo: float, hi: float)
+	var data_lo := 0.0
+	var data_hi := 1.0
+	var lo := 0.0
+	var hi := 1.0
+	var use_log := false
+	var _drag := -1                    # 0 = lo knob, 1 = hi knob, -1 = none
+	const PAD := 16.0
+	const KNOB_R := 7.0
+	const TRACK_Y := 22.0
+
+	func setup(dlo: float, dhi: float, clo: float, chi: float, log_scale: bool) -> void:
+		data_lo = dlo
+		data_hi = maxf(dhi, dlo + 1e-9)
+		use_log = log_scale and dlo > 0.0
+		lo = clampf(clo, data_lo, data_hi)
+		hi = clampf(chi, data_lo, data_hi)
+		queue_redraw()
+
+	func _v2t(v: float) -> float:
+		if use_log:
+			return clampf((log(maxf(v, 1e-9)) - log(data_lo)) / (log(data_hi) - log(data_lo)), 0.0, 1.0)
+		return clampf((v - data_lo) / (data_hi - data_lo), 0.0, 1.0)
+
+	func _t2v(t: float) -> float:
+		if use_log:
+			return exp(log(data_lo) + t * (log(data_hi) - log(data_lo)))
+		return data_lo + t * (data_hi - data_lo)
+
+	func _v2x(v: float) -> float:
+		return PAD + _v2t(v) * (size.x - 2.0 * PAD)
+
+	func _x2v(x: float) -> float:
+		return _t2v(clampf((x - PAD) / maxf(size.x - 2.0 * PAD, 1.0), 0.0, 1.0))
+
+	func _gui_input(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				_drag = 0 if absf(event.position.x - _v2x(lo)) <= absf(event.position.x - _v2x(hi)) else 1
+				_set_knob(event.position.x)
+			else:
+				_drag = -1
+			accept_event()
+		elif event is InputEventMouseMotion and _drag >= 0:
+			_set_knob(event.position.x)
+			accept_event()
+
+	func _set_knob(x: float) -> void:
+		var v := _x2v(x)
+		if _drag == 0: lo = minf(v, hi)
+		else: hi = maxf(v, lo)
+		queue_redraw()
+		changed.emit(lo, hi)
+
+	static func fmt(v: float) -> String:
+		var a := absf(v)
+		if a >= 1.0e6: return "%.1fM" % (v / 1.0e6)
+		if a >= 1.0e3: return "%.0fk" % (v / 1.0e3)
+		if a >= 100.0 or v == floor(v): return "%d" % int(round(v))
+		return "%.2f" % v
+
+	func _draw() -> void:
+		var ty := TRACK_Y
+		var font := get_theme_default_font()
+		draw_line(Vector2(PAD, ty), Vector2(size.x - PAD, ty), Color(0.4, 0.4, 0.46), 3.0)
+		draw_line(Vector2(_v2x(lo), ty), Vector2(_v2x(hi), ty), Color(0.30, 0.62, 1.0), 3.0)
+		draw_circle(Vector2(_v2x(lo), ty), KNOB_R, Color(1, 1, 1))
+		draw_circle(Vector2(_v2x(hi), ty), KNOB_R, Color(1, 1, 1))
+		# current selected values above the knobs
+		draw_string(font, Vector2(_v2x(lo) - 12, ty - 9), fmt(lo), HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
+		draw_string(font, Vector2(_v2x(hi) - 12, ty - 9), fmt(hi), HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
+		# data-scale ticks below
+		for i in 5:
+			var t := i / 4.0
+			draw_string(font, Vector2(PAD + t * (size.x - 2.0 * PAD) - 12.0, ty + 20.0),
+				fmt(_t2v(t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.6, 0.6, 0.65))
+
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
 var _filtered: Array = []     # current view
@@ -304,11 +385,11 @@ var _filter_set: Dictionary = {}      # col -> {value:true} allow-set (tick colu
 var _filter_min: Dictionary = {}      # col -> float min (numeric columns)
 var _filter_max: Dictionary = {}      # col -> float max (numeric columns)
 var _distinct_cache: Dictionary = {}  # col -> sorted distinct string values
-var _num_popup: PopupPanel            # shared min/max editor for numeric columns
-var _num_min: SpinBox
-var _num_max: SpinBox
+var _num_popup: PopupPanel            # shared range editor for numeric columns
+var _num_slider: RangeSlider
 var _num_lbl: Label
 var _num_popup_col: int = -1
+var _range_cache: Dictionary = {}     # col -> [data_min, data_max]
 const TICK_MAX := 25                   # <= this many distinct -> tickbox, else text filter
 var _autoplay: CheckButton
 var _tree: Tree
@@ -828,6 +909,7 @@ func _col_filter_kind(col: int) -> String:
 # Build a filter control per column inside the aligned header (after data load).
 func _build_filter_controls() -> void:
 	_distinct_cache = {}
+	_range_cache = {}
 	for c in _colfilters:
 		_colfilters[c].queue_free()
 	_colfilters = {}
@@ -884,16 +966,6 @@ func _on_tick_toggled(id: int, col: int, mb: MenuButton) -> void:
 	_apply()
 
 
-func _on_num_filter_pressed(col: int, btn: Button) -> void:
-	_num_popup_col = col
-	_num_lbl.text = "%s  min / max" % COL_TITLES[col]
-	_num_min.set_value_no_signal(_filter_min.get(col, _num_min.min_value))
-	_num_max.set_value_no_signal(_filter_max.get(col, _num_max.max_value))
-	var gp := btn.get_screen_position()
-	_num_popup.position = Vector2i(int(gp.x), int(gp.y + btn.size.y))
-	_num_popup.popup()
-
-
 func _build_num_popup() -> void:
 	_num_popup = PopupPanel.new()
 	add_child(_num_popup)
@@ -901,35 +973,61 @@ func _build_num_popup() -> void:
 	_num_popup.add_child(vb)
 	_num_lbl = Label.new()
 	vb.add_child(_num_lbl)
-	var row := HBoxContainer.new()
-	vb.add_child(row)
-	_num_min = _make_num_spin()
-	_num_max = _make_num_spin()
-	row.add_child(_num_min)
-	var dash := Label.new(); dash.text = "to"; row.add_child(dash)
-	row.add_child(_num_max)
+	_num_slider = RangeSlider.new()
+	_num_slider.custom_minimum_size = Vector2(340, 56)
+	_num_slider.changed.connect(_on_range_changed)
+	vb.add_child(_num_slider)
 	var clearb := Button.new()
-	clearb.text = "Clear"
+	clearb.text = "Clear (show all)"
 	clearb.pressed.connect(_on_num_filter_clear)
-	row.add_child(clearb)
-	_num_min.value_changed.connect(func(v): _on_num_filter_changed())
-	_num_max.value_changed.connect(func(v): _on_num_filter_changed())
+	vb.add_child(clearb)
 
 
-func _make_num_spin() -> SpinBox:
-	var s := SpinBox.new()
-	s.min_value = -1000000.0
-	s.max_value = 1000000000.0
-	s.step = 0.1
-	s.custom_minimum_size = Vector2(110, 0)
-	return s
+# Min/max for a column across the data (cached). Uses _num_value so "absent"
+# rows (NaN) don't pollute the range.
+func _col_data_range(col: int) -> Array:
+	if _range_cache.has(col):
+		return _range_cache[col]
+	var lo := INF
+	var hi := -INF
+	for rec in _all:
+		var v := _num_value(rec, col)
+		if is_nan(v):
+			continue
+		lo = minf(lo, v)
+		hi = maxf(hi, v)
+	if lo == INF:
+		lo = 0.0
+		hi = 1.0
+	_range_cache[col] = [lo, hi]
+	return _range_cache[col]
 
 
-func _on_num_filter_changed() -> void:
+func _on_num_filter_pressed(col: int, btn: Button) -> void:
+	_num_popup_col = col
+	_num_lbl.text = "%s   (drag the two knobs)" % COL_TITLES[col]
+	var rng := _col_data_range(col)
+	var dlo := float(rng[0])
+	var dhi := float(rng[1])
+	var clo := float(_filter_min.get(col, dlo))
+	var chi := float(_filter_max.get(col, dhi))
+	var uselog: bool = dlo > 0.0 and dhi / maxf(dlo, 1e-9) > 100.0
+	_num_slider.setup(dlo, dhi, clo, chi, uselog)
+	var gp := btn.get_screen_position()
+	_num_popup.position = Vector2i(int(gp.x), int(gp.y + btn.size.y))
+	_num_popup.popup()
+
+
+func _on_range_changed(lo: float, hi: float) -> void:
 	if _num_popup_col < 0:
 		return
-	_filter_min[_num_popup_col] = _num_min.value
-	_filter_max[_num_popup_col] = _num_max.value
+	var rng := _col_data_range(_num_popup_col)
+	if lo <= rng[0] + 1e-9 and hi >= rng[1] - 1e-9:   # full range -> no filter
+		_filter_min.erase(_num_popup_col)
+		_filter_max.erase(_num_popup_col)
+	else:
+		_filter_min[_num_popup_col] = lo
+		_filter_max[_num_popup_col] = hi
 	_mark_num_btn(_num_popup_col)
 	_apply()
 
@@ -948,21 +1046,56 @@ func _mark_num_btn(col: int) -> void:
 	var b: Variant = _colfilters.get(col)
 	if b is Button:
 		var active: bool = _filter_min.has(col) or _filter_max.has(col)
-		b.text = ("%g–%g" % [_filter_min.get(col, 0.0), _filter_max.get(col, 0.0)]) if active else "min–max"
+		b.text = ("%s–%s" % [RangeSlider.fmt(_filter_min.get(col, 0.0)),
+			RangeSlider.fmt(_filter_max.get(col, 0.0))]) if active else "min–max"
 
 
-# Position each filter control over its column (tracks resize + horizontal scroll).
+# Position each filter control over its column, using the Tree's ACTUAL drawn
+# cell rects (exact: accounts for the panel margin, inter-column spacing and the
+# horizontal scroll, which summing _col_w does not).
 func _layout_filter_header() -> void:
-	if _filter_header == null:
+	if _filter_header == null or _tree == null:
+		return
+	var root := _tree.get_root()
+	if root == null:
+		return
+	var first := root.get_first_child()
+	if first == null:
 		return
 	var h := _filter_header.size.y
-	var x := -float(_tree.get_scroll().x) if _tree else 0.0
 	for col in COL_COUNT:
 		var ctrl: Variant = _colfilters.get(col)
-		if ctrl != null:
-			ctrl.position = Vector2(x + 1.0, 2.0)
-			ctrl.size = Vector2(maxf(8.0, _col_w[col] - 2.0), h - 4.0)
-		x += _col_w[col]
+		if ctrl == null:
+			continue
+		var r := _tree.get_item_area_rect(first, col)   # exact column x + width
+		ctrl.position = Vector2(r.position.x, 2.0)
+		ctrl.size = Vector2(maxf(8.0, r.size.x - 2.0), h - 4.0)
+
+
+# A column's numeric value for filtering — NaN when the row has no value there
+# (so absent rows don't pollute ranges and are excluded by an active range).
+func _num_value(rec: Dictionary, col: int) -> float:
+	match col:
+		COL_SCORE:
+			var s: Variant = _sem_scores.get(String(rec.get("path", "")))
+			return float(s) if s != null else NAN
+		COL_CHOP_DB:
+			var v := _chop_db_val(rec); return NAN if v < -150.0 else v
+		COL_CHOP_GAP:
+			var v := _chop_gap_val(rec); return NAN if v < -0.5 else v
+		COL_CHOP_SND:
+			var v := _chop_snd_val(rec); return NAN if v < -0.5 else v
+		COL_CHOP_N:
+			var v := _chop_n_val(rec); return NAN if v < 0 else float(v)
+		COL_LEVEL:
+			return _get_level(rec)
+		COL_LOUDNESS:
+			return _loudness_rms(rec)
+		COL_GAIN_DB:
+			return _get_gain_db(rec)
+		COL_FINAL_DB:
+			return _final_db(rec)
+	return float(_sort_value(rec, col))            # duration/rate/bit/ch/size/rating/plays
 
 
 # Does a row pass every active per-column filter?
@@ -974,8 +1107,8 @@ func _passes_col_filters(rec: Dictionary) -> bool:
 		if not _filter_set[col].has(_filter_string_value(rec, col)):
 			return false
 	for col in _filter_min:                        # numeric range
-		var v := float(_sort_value(rec, col))
-		if v < float(_filter_min[col]) or v > float(_filter_max.get(col, 1e18)):
+		var v := _num_value(rec, col)
+		if is_nan(v) or v < float(_filter_min[col]) or v > float(_filter_max.get(col, 1e18)):
 			return false
 	return true
 
