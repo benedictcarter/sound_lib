@@ -2969,9 +2969,8 @@ func _chop_selected() -> void:
 	if typeof(_an_rec) != TYPE_DICTIONARY or _graph.segments.is_empty():
 		_an_status.text = "Analyse a file first — nothing to chop."
 		return
-	if _graph.segments.size() <= 1:
-		_an_status.text = "Only 1 piece at these settings — nothing to chop."
-		return
+	# A single segment is fine to chop: it trims the surrounding silence, writing
+	# just the kept (green) region as one _chopped_001 file.
 	var abs := _abs_path(_an_rec)
 	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
 		_an_status.text = "Chop supports existing WAV files only."
@@ -2999,8 +2998,8 @@ func _chop_selected() -> void:
 		"../indexer/chop.py").simplify_path()
 	_chop_busy = true
 	_chop_btn.disabled = true
-	_an_status.text = "Chopping %s into %d pieces…" % [
-		String(_an_rec.get("filename", "")), segs_s.size()]
+	_an_status.text = "Chopping %s into %d piece%s…" % [
+		String(_an_rec.get("filename", "")), segs_s.size(), "" if segs_s.size() == 1 else "s"]
 	_chop_thread = Thread.new()
 	_chop_thread.start(_chop_run.bind(script, abs, _chop_spec_path, _chop_result_path))
 
