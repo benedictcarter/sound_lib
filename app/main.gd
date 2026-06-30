@@ -2174,9 +2174,25 @@ func _set_stream_loop(stream: AudioStreamWAV) -> void:
 	if _loop_on:
 		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
 		stream.loop_begin = 0
-		stream.loop_end = int(round(stream.get_length() * stream.mix_rate))
+		# Exact sample-frame count from the PCM buffer — NOT get_length()*mix_rate,
+		# whose rounding can overshoot the data and play a sliver of silence before
+		# wrapping (an audible gap). This wraps precisely at the last frame.
+		stream.loop_end = _wav_frame_count(stream)
 	else:
 		stream.loop_mode = AudioStreamWAV.LOOP_DISABLED
+
+
+# Total sample frames in a PCM AudioStreamWAV (data bytes / bytes-per-frame).
+func _wav_frame_count(stream: AudioStreamWAV) -> int:
+	var bps := 0
+	if stream.format == AudioStreamWAV.FORMAT_8_BITS:
+		bps = 1
+	elif stream.format == AudioStreamWAV.FORMAT_16_BITS:
+		bps = 2
+	if bps > 0:
+		var ch := 2 if stream.stereo else 1
+		return stream.data.size() / (bps * ch)
+	return int(round(stream.get_length() * stream.mix_rate))   # compressed fallback
 
 
 func _on_loop_toggled(on: bool) -> void:
@@ -3007,14 +3023,17 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 	var silence := PackedByteArray()
 	silence.resize(int(sr) * frame_bytes)        # 1 s of zeros (= silence, signed PCM)
 	var out := PackedByteArray()
+	var first := true
 	for s in _effective_segments():
 		var a := clampi(int(round(float(s[0]) * _an_frame_s * sr)), 0, total)
 		var b := clampi(int(round(float(s[1]) * _an_frame_s * sr)), 0, total)
 		if b <= a:
 			continue
+		if not first:
+			out.append_array(silence)              # 1 s BETWEEN pieces only — no
 		out.append_array(data.slice(a * frame_bytes, b * frame_bytes))
-		out.append_array(silence)
-	if out.is_empty():
+		first = false                              # leading/trailing pad, so a single
+	if out.is_empty():                             # region loops seamlessly (no gap)
 		return null
 	var sw := AudioStreamWAV.new()
 	sw.format = stream.format

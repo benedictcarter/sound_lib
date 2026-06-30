@@ -60,7 +60,11 @@ for non-obvious gotchas.
   dBFS (digital, ceiling 0) ≠ dB SPL (acoustic, set by amp/speakers).
   **Loop** toggle (`_loop_chk`/`_loop_on`) sets the WAV's native
   `loop_mode = LOOP_FORWARD` (`_set_stream_loop`; seamless, and a looping stream
-  emits no `finished` so loops don't count as plays). **Space** toggles play/pause
+  emits no `finished` so loops don't count as plays). `loop_end` is the EXACT PCM
+  frame count (`_wav_frame_count` = data bytes / frame bytes), NOT
+  `get_length()*mix_rate` whose rounding overshoots into a sliver of silence (an
+  audible gap at the wrap). The chops/region preview pads 1 s BETWEEN pieces only
+  (no leading/trailing pad) so a single manual region loops with no gap. **Space** toggles play/pause
   globally via `_input` -> `_on_play_pressed`, suppressed when a `LineEdit`/
   `TextEdit` is focused or a tag type-over is active.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
