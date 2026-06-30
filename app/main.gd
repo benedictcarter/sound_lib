@@ -220,6 +220,7 @@ class RangeSlider extends Control:
 	var lo := 0.0
 	var hi := 1.0
 	var use_log := false
+	var fmt_value: Callable           # column-aware value -> String (mm:ss, MB, dB…)
 	var _drag := -1                    # 0 = lo knob, 1 = hi knob, -1 = none
 	const PAD := 16.0
 	const KNOB_R := 7.0
@@ -275,6 +276,9 @@ class RangeSlider extends Control:
 		if a >= 100.0 or v == floor(v): return "%d" % int(round(v))
 		return "%.2f" % v
 
+	func _fmt(v: float) -> String:
+		return str(fmt_value.call(v)) if fmt_value.is_valid() else fmt(v)
+
 	func _draw() -> void:
 		var ty := TRACK_Y
 		var font := get_theme_default_font()
@@ -283,13 +287,13 @@ class RangeSlider extends Control:
 		draw_circle(Vector2(_v2x(lo), ty), KNOB_R, Color(1, 1, 1))
 		draw_circle(Vector2(_v2x(hi), ty), KNOB_R, Color(1, 1, 1))
 		# current selected values above the knobs
-		draw_string(font, Vector2(_v2x(lo) - 12, ty - 9), fmt(lo), HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
-		draw_string(font, Vector2(_v2x(hi) - 12, ty - 9), fmt(hi), HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
+		draw_string(font, Vector2(_v2x(lo) - 16, ty - 9), _fmt(lo), HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
+		draw_string(font, Vector2(_v2x(hi) - 16, ty - 9), _fmt(hi), HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
 		# data-scale ticks below
 		for i in 5:
 			var t := i / 4.0
-			draw_string(font, Vector2(PAD + t * (size.x - 2.0 * PAD) - 12.0, ty + 20.0),
-				fmt(_t2v(t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.6, 0.6, 0.65))
+			draw_string(font, Vector2(PAD + t * (size.x - 2.0 * PAD) - 16.0, ty + 20.0),
+				_fmt(_t2v(t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.6, 0.6, 0.65))
 
 # ----- data ----------------------------------------------------------------
 var _all: Array = []          # all records (Dictionaries)
@@ -1015,6 +1019,7 @@ func _on_num_filter_pressed(col: int, btn: Button) -> void:
 	var clo := float(_filter_min.get(col, dlo))
 	var chi := float(_filter_max.get(col, dhi))
 	var uselog: bool = dlo > 0.0 and dhi / maxf(dlo, 1e-9) > 100.0
+	_num_slider.fmt_value = _fmt_col_value.bind(col)   # mm:ss / MB / dB per column
 	_num_slider.setup(dlo, dhi, clo, chi, uselog)
 	var gp := btn.get_screen_position()
 	_num_popup.position = Vector2i(int(gp.x), int(gp.y + btn.size.y))
@@ -1053,8 +1058,8 @@ func _mark_num_btn(col: int) -> void:
 	var b: Variant = _colfilters.get(col)
 	if b is Button:
 		var active: bool = _filter_min.has(col) or _filter_max.has(col)
-		b.text = ("%s–%s" % [RangeSlider.fmt(_filter_min.get(col, 0.0)),
-			RangeSlider.fmt(_filter_max.get(col, 0.0))]) if active else "min–max"
+		b.text = ("%s–%s" % [_fmt_col_value(float(_filter_min.get(col, 0.0)), col),
+			_fmt_col_value(float(_filter_max.get(col, 0.0)), col)]) if active else "min–max"
 
 
 # Position each filter control over its column, using the Tree's ACTUAL drawn
@@ -3305,3 +3310,17 @@ func _fmt_size(b: Variant) -> String:
 	if mb >= 1.0:
 		return "%.1f MB" % mb
 	return "%.0f KB" % (float(b) / 1024.0)
+
+
+# Format a numeric value in a column's own units (for the range slider + button).
+func _fmt_col_value(v: float, col: int) -> String:
+	match col:
+		COL_DURATION: return _fmt_time(v)                 # mm:ss
+		COL_SIZE: return _fmt_size(v)                     # bytes -> MB/KB
+		COL_RATE: return _fmt_rate(v)                     # Hz -> kHz
+		COL_CHOP_GAP, COL_CHOP_SND: return "%.2fs" % v
+		COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB, COL_CHOP_DB: return "%.1f dB" % v
+		COL_SCORE: return "%.2f" % v
+		COL_LEVEL: return "%.1f" % v
+		COL_BIT, COL_CH, COL_RATING, COL_PLAYS, COL_CHOP_N: return "%d" % int(round(v))
+	return RangeSlider.fmt(v)
