@@ -164,6 +164,12 @@ for non-obvious gotchas.
   chops. Threaded `py loopify.py <audio> <spec.json> <result.json>` (spec:
   start_s/end_s/crossfade_ms/curve/parent). Industry-standard primitive; an
   autocorrelation/zero-cross "Suggest loop" analyser is the planned next layer.
+  **Crossfade preview** (`_xfade_chk` + `_xfade_edit`): with it on, Play chops on a
+  SINGLE region builds the crossfaded loop IN MEMORY (`_build_xfade_loop_stream`,
+  the same equal-power overlap-add as loopify, per-sample over the L overlap via
+  `decode_s16`/`encode_s16`, middle is a byte slice) — audition with Loop on, no
+  file written. `_on_xfade_changed` (toggle / Xfade-ms Enter) and region re-drag
+  rebuild the live preview. Preview == what Make loop bakes (same xfade + curve).
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.

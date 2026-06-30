@@ -421,7 +421,8 @@ var _chop_result_path: String = ""
 var _loop_thread: Thread = null
 var _loop_busy: bool = false
 var _loop_btn: Button
-var _xfade_edit: LineEdit               # crossfade length (ms) for Make loop
+var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
+var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
 var _loop_result_path: String = ""
 
@@ -1268,14 +1269,23 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_loop_btn.pressed.connect(_make_loop)
 	bar.add_child(_loop_btn)
 
+	_xfade_chk = CheckButton.new()
+	_xfade_chk.text = "Crossfade"
+	_xfade_chk.tooltip_text = "Preview the selected region as a SEAMLESS crossfaded " \
+		+ "loop (in memory — nothing written). Turn Loop on and press Play chops to " \
+		+ "audition; tweak Xfade ms (Enter) and re-drag the region to experiment."
+	_xfade_chk.toggled.connect(_on_xfade_changed)
+	bar.add_child(_xfade_chk)
+
 	var xlab := Label.new()
 	xlab.text = "Xfade ms"
 	bar.add_child(xlab)
 	_xfade_edit = LineEdit.new()
 	_xfade_edit.text = "100"
 	_xfade_edit.custom_minimum_size = Vector2(48, 0)
-	_xfade_edit.tooltip_text = "Crossfade length in milliseconds for Make loop " \
-		+ "(longer = smoother but blends more of the ends)."
+	_xfade_edit.tooltip_text = "Crossfade length in milliseconds for the loop preview " \
+		+ "and Make loop (longer = smoother but blends more of the ends). Enter applies."
+	_xfade_edit.text_submitted.connect(func(_t): _on_xfade_changed(true))
 	bar.add_child(_xfade_edit)
 
 	_sg_btn = Button.new()
@@ -3019,8 +3029,13 @@ func _play_chops() -> void:
 	_play_btn.text = "Pause"
 	var npieces := _effective_segments().size()    # WYSIWYG: the GREEN pieces actually played
 	var fn := String(_an_rec.get("filename", ""))
-	_now_label.text = ("Playing region:  %s" % fn if (_graph.has_manual_sel() and npieces == 1)
-		else "Playing %d chops (1 s gaps):  %s" % [npieces, fn])
+	var xfade_on: bool = _xfade_chk and _xfade_chk.button_pressed and npieces == 1
+	if xfade_on:
+		_now_label.text = "Playing crossfaded loop (%s ms):  %s" % [_xfade_edit.text.strip_edges(), fn]
+	elif _graph.has_manual_sel() and npieces == 1:
+		_now_label.text = "Playing region:  %s" % fn
+	else:
+		_now_label.text = "Playing %d chops (1 s gaps):  %s" % [npieces, fn]
 
 
 # Concatenate the loaded WAV's pieces (segment frames -> samples) with 1 s of
@@ -3038,11 +3053,16 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 	var sr := stream.mix_rate
 	var data := stream.data
 	var total := data.size() / frame_bytes
+	var segs := _effective_segments()
+	# Crossfade preview: a SINGLE region baked (in memory) into a seamless loop —
+	# the same equal-power overlap-add as loopify.py, so the preview == Make loop.
+	if _xfade_chk and _xfade_chk.button_pressed and segs.size() == 1:
+		return _build_xfade_loop_stream(stream, segs[0], bps, ch, frame_bytes, sr, data, total)
 	var silence := PackedByteArray()
 	silence.resize(int(sr) * frame_bytes)        # 1 s of zeros (= silence, signed PCM)
 	var out := PackedByteArray()
 	var first := true
-	for s in _effective_segments():
+	for s in segs:
 		var a := clampi(int(round(float(s[0]) * _an_frame_s * sr)), 0, total)
 		var b := clampi(int(round(float(s[1]) * _an_frame_s * sr)), 0, total)
 		if b <= a:
@@ -3059,6 +3079,56 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 	sw.stereo = stream.stereo
 	sw.data = out
 	return sw
+
+
+# In-memory equal-power crossfade loop of ONE region (mirror of loopify.crossfade_
+# loop): tail (L frames) faded out + blended over the head (faded in), then the
+# untouched middle. Result length = N − L and wraps seamlessly. Per-sample mixing
+# is only over the L overlap (cheap); the middle is a fast byte slice.
+func _build_xfade_loop_stream(stream: AudioStreamWAV, seg: Array, bps: int, ch: int,
+		frame_bytes: int, sr: int, data: PackedByteArray, total: int) -> AudioStreamWAV:
+	var a := clampi(int(round(float(seg[0]) * _an_frame_s * sr)), 0, total)
+	var b := clampi(int(round(float(seg[1]) * _an_frame_s * sr)), 0, total)
+	if b <= a:
+		return null
+	var n := b - a
+	var xfade_ms := maxf(0.0, _xfade_edit.text.strip_edges().to_float())
+	var L := clampi(int(round(xfade_ms / 1000.0 * sr)), 0, n / 2)
+	var out := PackedByteArray()
+	if L > 0:
+		out.resize(L * frame_bytes)              # the blended head; written below
+		for i in range(L):
+			var t := float(i) / float(L)
+			var g_in := sin(t * PI / 2.0)        # equal power (constant power blend)
+			var g_out := cos(t * PI / 2.0)
+			for c in range(ch):
+				var head_off := (a + i) * frame_bytes + c * bps
+				var tail_off := (a + n - L + i) * frame_bytes + c * bps
+				var dst := (i * ch + c) * bps
+				if bps == 2:
+					var hs := data.decode_s16(head_off)
+					var ts := data.decode_s16(tail_off)
+					out.encode_s16(dst, clampi(int(round(g_out * ts + g_in * hs)), -32768, 32767))
+				else:                            # signed 8-bit
+					var hs8 := data[head_off] - (256 if data[head_off] > 127 else 0)
+					var ts8 := data[tail_off] - (256 if data[tail_off] > 127 else 0)
+					out[dst] = clampi(int(round(g_out * ts8 + g_in * hs8)), -128, 127) & 0xff
+	# untouched middle: frames [a+L, a+n-L)
+	out.append_array(data.slice((a + L) * frame_bytes, (a + n - L) * frame_bytes))
+	if out.is_empty():
+		return null
+	var sw := AudioStreamWAV.new()
+	sw.format = stream.format
+	sw.mix_rate = sr
+	sw.stereo = stream.stereo
+	sw.data = out
+	return sw
+
+
+# Crossfade option / Xfade ms changed — rebuild the live preview if one is playing.
+func _on_xfade_changed(_v: Variant = null) -> void:
+	if _playing_chops and not _effective_segments().is_empty():
+		_play_chops()
 
 
 # Live feedback as the region is dragged (status text + green repaint happens in
