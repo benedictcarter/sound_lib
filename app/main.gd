@@ -105,12 +105,24 @@ class WaveGraph extends Control:
 	const BOT_DB := -90.0
 	const TRACK_PAD := 7.0            # px from the bottom for the seek track + dot
 
+	# Height = PERCEIVED loudness, not raw dB. Using the app's own loudness model
+	# (+10 dB ≈ twice as loud, i.e. loudness ∝ 2^(dB/10)), normalised so BOT→0,
+	# TOP→1. So equal pixels ≈ equal perceived-loudness steps: quiet reads quiet,
+	# loud reads tall, matching how you hear it (rather than dB plotted linearly,
+	# which over-inflates near-silence). Threshold/detection still work in dB.
+	func _loud_frac(db: float) -> float:
+		var pmin := pow(2.0, BOT_DB / 10.0)
+		var p := pow(2.0, db / 10.0)
+		return clampf((p - pmin) / (1.0 - pmin), 0.0, 1.0)
+
 	func _yfor(db: float) -> float:
-		return clampf((TOP_DB - db) / (TOP_DB - BOT_DB), 0.0, 1.0) * size.y
+		return (1.0 - _loud_frac(db)) * size.y
 
 	func _db_at_y(y: float) -> float:
-		var t := clampf(y / maxf(size.y, 1.0), 0.0, 1.0)
-		return TOP_DB - t * (TOP_DB - BOT_DB)
+		var frac := clampf(1.0 - y / maxf(size.y, 1.0), 0.0, 1.0)
+		var pmin := pow(2.0, BOT_DB / 10.0)
+		var p := pmin + frac * (1.0 - pmin)
+		return clampf(10.0 * log(p) / log(2.0), BOT_DB, TOP_DB)
 
 	func _frac_at_x(x: float) -> float:
 		return clampf(x / maxf(size.x, 1.0), 0.0, 1.0)

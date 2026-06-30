@@ -109,7 +109,11 @@ for non-obvious gotchas.
   and shows the picture. WaveGraph paints the KEPT sounds (detected segments)
   GREEN and the bits being CHOPPED AWAY (gaps) GREY (still drawn, so you see what's
   removed) — colour by segment membership, not by threshold; per-piece chop
-  boundaries BLUE, threshold dB by the orange line. The graph is
+  boundaries BLUE, threshold dB by the orange line. The Y axis is PERCEPTUAL, not
+  linear dB: height ∝ loudness `2^(dB/10)` (the app's +10 dB≈2× model), normalised
+  BOT→0 TOP→1 (`WaveGraph._loud_frac`/`_yfor`, `_db_at_y` is the exact inverse so
+  right-drag set-height still maps), so each 10 dB halves the height and quiet
+  reads quiet. Detection/threshold still operate in raw dB. The graph is
   also the seek surface: LEFT-click = seek (`seek_requested` -> `_on_graph_seek`)
   AND set the chop dB (`threshold_picked` -> `_on_graph_threshold_picked`);
   LEFT-drag = scrub only; RIGHT-click/drag = set chop dB only. Play dot rides the
