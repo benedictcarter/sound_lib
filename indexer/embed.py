@@ -84,7 +84,7 @@ def main() -> None:
         v = np.asarray(next(iter(model.embed([doc_text(r)]))), dtype=np.float32)
         new_vecs[r["path"]] = v / (np.linalg.norm(v) + 1e-9)
         done += 1
-        if done % 200 == 0:
+        if done % 25 == 0:
             _write_progress(args.progress, done, len(todo), False)
 
     have.update(new_vecs)                         # merge old + new, keep index order

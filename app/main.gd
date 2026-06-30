@@ -514,7 +514,7 @@ func _build_ui() -> void:
 	bar0.add_child(_sem_edit)
 
 	_emb_btn = Button.new()
-	_emb_btn.text = "Update index"
+	_emb_btn.text = "Update semantic index"
 	_emb_btn.tooltip_text = "Embed any files that don't have a semantic vector yet " \
 		+ "(e.g. new chops). Run once before first use; quick afterwards."
 	_emb_btn.pressed.connect(_update_embeddings)
@@ -1184,7 +1184,7 @@ func _update_embeddings() -> void:
 		DirAccess.remove_absolute(_emb_progress_path)
 	_emb_busy = true
 	_emb_btn.disabled = true
-	_status_label.text = "Updating semantic index (embedding any new files)…"
+	_status_label.text = "Scanning for new files…"   # until embed.py reports a total
 	_emb_thread = Thread.new()
 	_emb_thread.start(_emb_run.bind(script, _emb_progress_path))
 	_emb_poll.start()
@@ -1200,10 +1200,12 @@ func _emb_run(script: String, progress: String) -> void:
 
 
 func _emb_tick() -> void:
+	# until the progress file exists with a total, we're still scanning -> leave the
+	# "Scanning for new files…" status alone.
 	if FileAccess.file_exists(_emb_progress_path):
 		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
 		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
-			_status_label.text = "Embedding new files… %d / %d" % [
+			_status_label.text = "Embedding new files… %d / %d new" % [
 				int(d.get("analysed", 0)), int(d.get("total", 0))]
 
 
