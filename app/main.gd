@@ -981,6 +981,9 @@ func _build_num_popup() -> void:
 	clearb.text = "Clear (show all)"
 	clearb.pressed.connect(_on_num_filter_clear)
 	vb.add_child(clearb)
+	# apply the filter only when the popup closes (click away) — not on every drag,
+	# which would re-filter the whole table mid-drag and make the knobs unusable.
+	_num_popup.popup_hide.connect(_on_num_popup_hide)
 
 
 # Min/max for a column across the data (cached). Uses _num_value so "absent"
@@ -1018,6 +1021,8 @@ func _on_num_filter_pressed(col: int, btn: Button) -> void:
 	_num_popup.popup()
 
 
+# Live during a drag: update the stored range + the button label, but do NOT
+# re-filter (that happens once on popup close, in _on_num_popup_hide).
 func _on_range_changed(lo: float, hi: float) -> void:
 	if _num_popup_col < 0:
 		return
@@ -1029,7 +1034,10 @@ func _on_range_changed(lo: float, hi: float) -> void:
 		_filter_min[_num_popup_col] = lo
 		_filter_max[_num_popup_col] = hi
 	_mark_num_btn(_num_popup_col)
-	_apply()
+
+
+func _on_num_popup_hide() -> void:
+	_apply()                                       # apply the chosen range now
 
 
 func _on_num_filter_clear() -> void:
@@ -1038,8 +1046,7 @@ func _on_num_filter_clear() -> void:
 	_filter_min.erase(_num_popup_col)
 	_filter_max.erase(_num_popup_col)
 	_mark_num_btn(_num_popup_col)
-	_num_popup.hide()
-	_apply()
+	_num_popup.hide()                              # popup_hide -> _apply
 
 
 func _mark_num_btn(col: int) -> void:
