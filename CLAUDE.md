@@ -174,6 +174,15 @@ for non-obvious gotchas.
   `decode_s16`/`encode_s16`, middle is a byte slice) — audition with Loop on, no
   file written. `_on_xfade_changed` (toggle / Xfade-ms Enter) and region re-drag
   rebuild the live preview. Preview == what Make loop bakes (same xfade + curve).
+  **Suggest loop** (`_suggest_loop_btn`/`_suggest_loop` -> `indexer/loopfind.py`):
+  picks a good loop region by content type. PERIODIC (gunfire/engines): envelope
+  autocorrelation finds the cycle; loops a whole number of cycles bounded to the
+  REGULAR onset run (never spills into the tail -> rhythm uninterrupted), short
+  xfade. TEXTURE (flame/rain): the steady sustain PLATEAU (loudest 90th-pct band,
+  longest contiguous run, onset/tail trimmed), generous (~200 ms) xfade. Both snap
+  ends to a rising zero crossing and refine the length by window SSD. `_sl_finished`
+  sets the green region + Xfade, ticks Crossfade + Loop, and auto-previews. Golden-
+  tested (find_period periodic vs texture, suggest_loop region validity).
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
@@ -210,6 +219,8 @@ for non-obvious gotchas.
 - Combined analysis (what the app runs): `py indexer/analyse_audio.py`  (chops + loudness, one read/file)
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
+- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json]`
+- Bake a seamless loop: `py indexer/loopify.py <audio> <spec.json> <result.json>`
 - Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)
 - Run the Python tests: `py -m pytest`  (golden tests in `indexer/tests/`)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`

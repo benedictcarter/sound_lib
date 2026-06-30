@@ -433,6 +433,10 @@ var _chop_result_path: String = ""
 var _loop_thread: Thread = null
 var _loop_busy: bool = false
 var _loop_btn: Button
+var _suggest_loop_btn: Button
+var _sl_thread: Thread = null
+var _sl_busy: bool = false
+var _sl_result_path: String = ""
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -556,6 +560,7 @@ func _ready() -> void:
 	_chop_result_path = ProjectSettings.globalize_path("user://chop_result.json")
 	_loop_spec_path = ProjectSettings.globalize_path("user://loop_spec.json")
 	_loop_result_path = ProjectSettings.globalize_path("user://loop_result.json")
+	_sl_result_path = ProjectSettings.globalize_path("user://suggest_loop.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
@@ -1272,6 +1277,15 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "original (the original is KEPT). Re-run the indexer to see them."
 	_chop_btn.pressed.connect(_chop_selected)
 	bar.add_child(_chop_btn)
+
+	_suggest_loop_btn = Button.new()
+	_suggest_loop_btn.text = "Suggest loop"
+	_suggest_loop_btn.tooltip_text = "Analyse the file and pick a good seamless-loop " \
+		+ "region: a whole number of cycles for rhythmic sounds (gunfire, engines), or " \
+		+ "the steady sustain for textures (flame, rain). Sets the region + crossfade " \
+		+ "and previews it — tweak, then Make loop."
+	_suggest_loop_btn.pressed.connect(_suggest_loop)
+	bar.add_child(_suggest_loop_btn)
 
 	_loop_btn = Button.new()
 	_loop_btn.text = "Make loop"
@@ -3250,6 +3264,67 @@ func _chop_finished() -> void:
 	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
 	_an_status.text = "Chopped into %d pieces — added to the library (original kept).%s" % [
 		recs.size(), tag_note]
+
+
+# ----- suggest loop: loopfind.py picks a good loop region, then auto-preview ----
+func _suggest_loop() -> void:
+	if _sl_busy:
+		return
+	if typeof(_an_rec) != TYPE_DICTIONARY:
+		_an_status.text = "Click a file first, then Suggest loop."
+		return
+	var abs := _abs_path(_an_rec)
+	if String(_an_rec.get("ext", "")).to_lower() != "wav" or not FileAccess.file_exists(abs):
+		_an_status.text = "Suggest loop supports existing WAV files only."
+		return
+	if FileAccess.file_exists(_sl_result_path):
+		DirAccess.remove_absolute(_sl_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/loopfind.py").simplify_path()
+	_sl_busy = true
+	_suggest_loop_btn.disabled = true
+	_an_status.text = "Finding a good loop…"
+	_sl_thread = Thread.new()
+	_sl_thread.start(_sl_run.bind(script, abs, _sl_result_path))
+
+
+func _sl_run(script: String, audio: String, result: String) -> void:
+	var output: Array = []
+	var args := [script, audio, result]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_sl_finished")
+
+
+func _sl_finished() -> void:
+	_sl_busy = false
+	if _sl_thread:
+		_sl_thread.wait_to_finish()
+		_sl_thread = null
+	_suggest_loop_btn.disabled = false
+	if not FileAccess.file_exists(_sl_result_path):
+		_an_status.text = "Suggest loop failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sl_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		_an_status.text = "Suggest loop error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		return
+	var dur := float(d.get("duration", _an_duration))
+	if dur <= 0.0:
+		dur = maxf(_an_duration, 0.001)
+	# set the green region from the suggested seconds, and the crossfade
+	_graph.sel_a = clampf(float(d.get("start_s", 0.0)) / dur, 0.0, 1.0)
+	_graph.sel_b = clampf(float(d.get("end_s", dur)) / dur, 0.0, 1.0)
+	_graph.queue_redraw()
+	_xfade_edit.text = "%.0f" % float(d.get("crossfade_ms", 100.0))
+	_xfade_chk.button_pressed = true            # preview as a crossfaded loop
+	if _loop_chk:
+		_loop_chk.button_pressed = true         # loop it so the seam is audible
+	var kind := ("rhythmic %.0f ms" % float(d.get("period_ms", 0.0))) if d.get("periodic", false) else "texture"
+	_an_status.text = "Suggested loop %.3f–%.3fs (%.0f ms xfade, %s) — auditioning; tweak then Make loop." % [
+		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), float(d.get("crossfade_ms", 0.0)), kind]
+	_play_chops()                               # audition the crossfaded loop now
 
 
 # ----- make loop: loopify.py bakes a seamless name_loop.wav beside the original --

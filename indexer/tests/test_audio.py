@@ -125,6 +125,49 @@ def test_crossfade_loop_zero_xfade_is_identity():
     assert np.array_equal(crossfade_loop(region, 0, "equal_power"), region)
 
 
+# ---- loop finder ----------------------------------------------------------
+def test_loopfind_detects_periodic_rhythm():
+    import loopfind as LP
+    # impulse train at 100 ms (10 Hz) with noise bursts -> clear envelope period
+    sr = SR
+    x = np.zeros(int(2.0 * sr))
+    period = int(0.10 * sr)
+    for k in range(1, 18):
+        i = k * period
+        x[i:i + int(0.01 * sr)] = np.random.default_rng(k).standard_normal(int(0.01 * sr)) * 0.6
+    env, hop = LP.envelope(x, sr)
+    p, strength = LP.find_period(env, hop, sr)
+    assert p is not None
+    assert abs(p / sr - 0.10) < 0.02            # ~100 ms period
+    assert strength > 0.45
+
+
+def test_loopfind_texture_has_no_period():
+    import loopfind as LP
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal(int(2.0 * SR)) * 0.3   # stationary noise = texture
+    env, hop = LP.envelope(x, SR)
+    p, strength = LP.find_period(env, hop, SR)
+    # stationary noise has no STRONG period: either no peak, or below the 0.45
+    # strength gate suggest_loop uses to switch into the rhythmic strategy.
+    assert p is None or strength < 0.45
+
+
+def test_loopfind_suggest_returns_valid_region(tmp_path):
+    import loopfind as LP
+    sr = SR
+    x = np.zeros((int(2.0 * sr), 1))
+    period = int(0.10 * sr)
+    for k in range(1, 18):
+        i = k * period
+        x[i:i + int(0.01 * sr), 0] = np.random.default_rng(k).standard_normal(int(0.01 * sr)) * 0.6
+    p = tmp_path / "imp.wav"
+    sf.write(str(p), x, sr, subtype="PCM_16")
+    r = LP.suggest_loop(str(p))
+    assert r["ok"] and 0.0 <= r["start_s"] < r["end_s"] <= r["duration"]
+    assert r["crossfade_ms"] >= 0.0
+
+
 # ---- atomic JSON writer ---------------------------------------------------
 def test_write_json_atomic_overwrites_cleanly(tmp_path):
     p = tmp_path / "x.json"
