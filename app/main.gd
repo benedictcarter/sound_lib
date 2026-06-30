@@ -294,6 +294,7 @@ var _prefs_path: String = ""
 
 # ----- nodes ---------------------------------------------------------------
 var _search: LineEdit
+var _lib_label: Label                 # library-root path shown top-left
 var _vol_slider: HSlider
 var _bundle_opt: OptionButton
 var _supplier_opt: OptionButton
@@ -497,14 +498,28 @@ func _build_ui() -> void:
 	root.add_theme_constant_override("separation", 6)
 	add_child(root)
 
-	# --- toolbar row 0: SEMANTIC search (meaning-based; ranks the base set) ---
+	# --- toolbar row: library folder (top-left) + path ------------------
+	var barlib := HBoxContainer.new()
+	barlib.add_theme_constant_override("separation", 8)
+	root.add_child(barlib)
+
+	var openbtn := Button.new()
+	openbtn.text = "Open folder"
+	openbtn.tooltip_text = "Open the selected file's folder (or the library root) in your file browser."
+	openbtn.pressed.connect(_on_reveal)
+	barlib.add_child(openbtn)
+
+	_lib_label = Label.new()
+	_lib_label.clip_text = true
+	_lib_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lib_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.66))
+	barlib.add_child(_lib_label)
+
+	# --- toolbar row: SEMANTIC search box (left) + Update index (right) ---
+	# No label — the placeholder describes it; left edge aligns with the Filter box.
 	var bar0 := HBoxContainer.new()
 	bar0.add_theme_constant_override("separation", 8)
 	root.add_child(bar0)
-
-	var seml := Label.new()
-	seml.text = "Semantic"
-	bar0.add_child(seml)
 
 	_sem_edit = LineEdit.new()
 	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
@@ -520,14 +535,10 @@ func _build_ui() -> void:
 	_emb_btn.pressed.connect(_update_embeddings)
 	bar0.add_child(_emb_btn)
 
-	# --- toolbar row 1: text filter + autoplay --------------------------
+	# --- toolbar row: text Filter box (left-aligned with the semantic box) --
 	var bar1 := HBoxContainer.new()
 	bar1.add_theme_constant_override("separation", 8)
 	root.add_child(bar1)
-
-	var sl := Label.new()
-	sl.text = "Filter"
-	bar1.add_child(sl)
 
 	_search = LineEdit.new()
 	_search.placeholder_text = "filter by filename / library / supplier / description / tags  (space = AND)"
@@ -536,10 +547,9 @@ func _build_ui() -> void:
 	_search.text_changed.connect(_on_search_changed)
 	bar1.add_child(_search)
 
-	_autoplay = CheckButton.new()
-	_autoplay.text = "Autoplay on select"
+	_autoplay = CheckButton.new()                # added to the player bar below
+	_autoplay.text = "Autoplay"
 	_autoplay.button_pressed = true
-	bar1.add_child(_autoplay)
 
 	# --- toolbar row 2: filters -----------------------------------------
 	var bar2 := HBoxContainer.new()
@@ -624,6 +634,9 @@ func _build_ui() -> void:
 	stop.pressed.connect(_on_stop_pressed)
 	pbar.add_child(stop)
 
+	_autoplay.focus_mode = Control.FOCUS_NONE      # don't eat the Space shortcut
+	pbar.add_child(_autoplay)                      # next to Play / Stop / Loop
+
 	_loop_chk = CheckButton.new()
 	_loop_chk.text = "Loop"
 	_loop_chk.tooltip_text = "Replay this track: loop the current track seamlessly."
@@ -649,11 +662,6 @@ func _build_ui() -> void:
 	_vol_slider.value_changed.connect(_on_volume_changed)
 	pbar.add_child(_vol_slider)
 	_on_volume_changed(0.9)
-
-	var reveal := Button.new()
-	reveal.text = "Open folder"
-	reveal.pressed.connect(_on_reveal)
-	pbar.add_child(reveal)
 
 	# Seeking now lives in the visualiser directly above (left-click/drag to
 	# scrub); its play dot and white cursor line up exactly. The hint fills the
@@ -909,6 +917,8 @@ func _load_index() -> void:
 	for rec in _all:
 		_by_path[String(rec.get("path", ""))] = rec
 	_library_root = String(data.get("library_root", "")).replace("\\", "/")
+	if _lib_label:
+		_lib_label.text = _library_root
 	_status_label.text = "Library root: %s   |   indexed %s" % [
 		_library_root, str(data.get("generated", "?"))
 	]
@@ -1781,10 +1791,11 @@ func _on_loop_toggled(on: bool) -> void:
 
 
 func _on_reveal() -> void:
+	# the selected file's folder, or the library root if nothing is selected
 	var rec: Variant = _selected_rec()
-	if rec == null:
-		return
-	var folder := _library_root.path_join(String(rec.get("path", "")).get_base_dir())
+	var folder := _library_root
+	if typeof(rec) == TYPE_DICTIONARY:
+		folder = _library_root.path_join(String(rec.get("path", "")).get_base_dir())
 	OS.shell_open(folder)
 
 
