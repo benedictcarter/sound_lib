@@ -296,10 +296,20 @@ var _prefs_path: String = ""
 var _search: LineEdit
 var _lib_label: Label                 # library-root path shown top-left
 var _vol_slider: HSlider
-var _bundle_opt: OptionButton
-var _supplier_opt: OptionButton
-var _library_opt: OptionButton
-var _ext_opt: OptionButton
+# per-column filter header (aligned above the columns; type per column)
+var _filter_header: Control
+var _colfilters: Dictionary = {}      # col -> the filter control node
+var _filter_text: Dictionary = {}     # col -> lowercased substring (text columns)
+var _filter_set: Dictionary = {}      # col -> {value:true} allow-set (tick columns)
+var _filter_min: Dictionary = {}      # col -> float min (numeric columns)
+var _filter_max: Dictionary = {}      # col -> float max (numeric columns)
+var _distinct_cache: Dictionary = {}  # col -> sorted distinct string values
+var _num_popup: PopupPanel            # shared min/max editor for numeric columns
+var _num_min: SpinBox
+var _num_max: SpinBox
+var _num_lbl: Label
+var _num_popup_col: int = -1
+const TICK_MAX := 25                   # <= this many distinct -> tickbox, else text filter
 var _autoplay: CheckButton
 var _tree: Tree
 var _count_label: Label
@@ -442,20 +452,7 @@ func _apply_view_prefs() -> void:
 		_vol_slider.value = float(_prefs["volume"])       # value_changed -> _on_volume_changed
 	if _prefs.has("search"):
 		_search.text = String(_prefs["search"])
-	_restore_filter(_bundle_opt, String(_prefs.get("f_bundle", "")))
-	_restore_filter(_supplier_opt, String(_prefs.get("f_supplier", "")))
-	_restore_filter(_library_opt, String(_prefs.get("f_library", "")))
-	_restore_filter(_ext_opt, String(_prefs.get("f_ext", "")))
 	_apply()
-
-
-func _restore_filter(opt: OptionButton, value: String) -> void:
-	if value == "":
-		return
-	for i in opt.item_count:
-		if String(opt.get_item_metadata(i)) == value:
-			opt.select(i)
-			return
 
 
 func _save_prefs() -> void:
@@ -466,8 +463,6 @@ func _save_prefs() -> void:
 		"col_w": _col_w.duplicate(),
 		"sort_col": _sort_col, "sort_asc": _sort_asc,
 		"search": _search.text if _search else "",
-		"f_bundle": _selected_meta(_bundle_opt), "f_supplier": _selected_meta(_supplier_opt),
-		"f_library": _selected_meta(_library_opt), "f_ext": _selected_meta(_ext_opt),
 		"autoplay": _autoplay.button_pressed if _autoplay else true,
 		"loop": _loop_on,
 		"volume": _global_vol,
@@ -551,20 +546,20 @@ func _build_ui() -> void:
 	_autoplay.text = "Autoplay"
 	_autoplay.button_pressed = true
 
-	# --- toolbar row 2: filters -----------------------------------------
+	# --- toolbar row 2: clear + count (per-column filters live above the table) --
 	var bar2 := HBoxContainer.new()
 	bar2.add_theme_constant_override("separation", 8)
 	root.add_child(bar2)
-
-	_bundle_opt = _add_filter(bar2, "Bundle")
-	_supplier_opt = _add_filter(bar2, "Supplier")
-	_library_opt = _add_filter(bar2, "Library")
-	_ext_opt = _add_filter(bar2, "Type")
 
 	var clear := Button.new()
 	clear.text = "Clear filters"
 	clear.pressed.connect(_on_clear)
 	bar2.add_child(clear)
+
+	var fhint := Label.new()
+	fhint.text = "  ↓ each column filters by its own type (text / tick-boxes / min–max)"
+	fhint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
+	bar2.add_child(fhint)
 
 	_count_label = Label.new()
 	_count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -603,10 +598,24 @@ func _build_ui() -> void:
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.add_child(split)
-	split.add_child(_tree)
+
+	# left pane = per-column filter header ABOVE the tree, so it shares the tree's
+	# column widths / horizontal scroll and lines up over the columns.
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 0)
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_filter_header = Control.new()
+	_filter_header.custom_minimum_size = Vector2(0, 28)
+	_filter_header.clip_contents = true
+	left.add_child(_filter_header)
+	left.add_child(_tree)
+	split.add_child(left)
 	split.add_child(_build_keyword_panel())
 	# big offset -> table takes the slack, keyword panel rests at its min width
 	split.set_deferred("split_offset", 5000)
+
+	_build_num_popup()
 
 	_build_analyser(root)
 
@@ -776,15 +785,199 @@ func _build_ui() -> void:
 	add_child(_chop_save_debounce)
 
 
-func _add_filter(parent: HBoxContainer, label: String) -> OptionButton:
-	var l := Label.new()
-	l.text = label
-	parent.add_child(l)
-	var o := OptionButton.new()
-	o.custom_minimum_size = Vector2(150, 0)
-	o.item_selected.connect(func(_i): _apply())
-	parent.add_child(o)
-	return o
+# ===========================================================================
+#  Per-column filters (text / tick-box / min–max, by column type)
+# ===========================================================================
+# The string value a column filters on (text + tick columns).
+func _filter_string_value(rec: Dictionary, col: int) -> String:
+	match col:
+		COL_FILENAME: return String(rec.get("filename", ""))
+		COL_LIBRARY: return String(rec.get("library", ""))
+		COL_SUPPLIER: return String(rec.get("supplier", ""))
+		COL_BUNDLE: return String(rec.get("bundle", ""))
+		COL_TAGS: return _get_tags(rec)
+	return ""
+
+
+const STRING_FILTER_COLS := [COL_FILENAME, COL_LIBRARY, COL_SUPPLIER, COL_BUNDLE, COL_TAGS]
+
+
+func _distinct_values(col: int) -> Array:
+	if _distinct_cache.has(col):
+		return _distinct_cache[col]
+	var seen := {}
+	for rec in _all:
+		var v := _filter_string_value(rec, col)
+		if v != "":
+			seen[v] = true
+	var vals := seen.keys()
+	vals.sort_custom(func(a, b): return a.naturalnocasecmp_to(b) < 0)
+	_distinct_cache[col] = vals
+	return vals
+
+
+# "num" (min/max), "tick" (few distinct -> checkboxes), "text" (substring), or "".
+func _col_filter_kind(col: int) -> String:
+	if col in NUMERIC_COLS:
+		return "num"
+	if col in STRING_FILTER_COLS:
+		return "tick" if _distinct_values(col).size() <= TICK_MAX else "text"
+	return ""
+
+
+# Build a filter control per column inside the aligned header (after data load).
+func _build_filter_controls() -> void:
+	_distinct_cache = {}
+	for c in _colfilters:
+		_colfilters[c].queue_free()
+	_colfilters = {}
+	for col in COL_COUNT:
+		var ctrl: Control = null
+		match _col_filter_kind(col):
+			"text":
+				var le := LineEdit.new()
+				le.placeholder_text = "filter"
+				le.add_theme_font_size_override("font_size", 12)
+				le.text_changed.connect(func(t: String):
+					var s := t.strip_edges().to_lower()
+					if s == "": _filter_text.erase(col)
+					else: _filter_text[col] = s
+					_debounce.start())
+				ctrl = le
+			"tick":
+				var mb := MenuButton.new()
+				mb.text = COL_TITLES[col]
+				mb.clip_text = true
+				var pop := mb.get_popup()
+				pop.hide_on_checkable_item_selection = false
+				var vals := _distinct_values(col)
+				for i in vals.size():
+					pop.add_check_item(_short_bundle(vals[i]) if col == COL_BUNDLE else vals[i], i)
+					pop.set_item_metadata(i, vals[i])
+				pop.id_pressed.connect(_on_tick_toggled.bind(col, mb))
+				ctrl = mb
+			"num":
+				var b := Button.new()
+				b.text = "min–max"
+				b.add_theme_font_size_override("font_size", 11)
+				b.pressed.connect(_on_num_filter_pressed.bind(col, b))
+				ctrl = b
+		if ctrl:
+			ctrl.tooltip_text = COL_TITLES[col]
+			_filter_header.add_child(ctrl)
+			_colfilters[col] = ctrl
+	_layout_filter_header()
+
+
+func _on_tick_toggled(id: int, col: int, mb: MenuButton) -> void:
+	var pop := mb.get_popup()
+	var idx := pop.get_item_index(id)
+	var checked := not pop.is_item_checked(idx)
+	pop.set_item_checked(idx, checked)
+	var s: Dictionary = _filter_set.get(col, {})
+	var val := String(pop.get_item_metadata(idx))
+	if checked: s[val] = true
+	else: s.erase(val)
+	if s.is_empty(): _filter_set.erase(col)
+	else: _filter_set[col] = s
+	mb.text = COL_TITLES[col] + ("" if s.is_empty() else " (%d)" % s.size())
+	_apply()
+
+
+func _on_num_filter_pressed(col: int, btn: Button) -> void:
+	_num_popup_col = col
+	_num_lbl.text = "%s  min / max" % COL_TITLES[col]
+	_num_min.set_value_no_signal(_filter_min.get(col, _num_min.min_value))
+	_num_max.set_value_no_signal(_filter_max.get(col, _num_max.max_value))
+	var gp := btn.get_screen_position()
+	_num_popup.position = Vector2i(int(gp.x), int(gp.y + btn.size.y))
+	_num_popup.popup()
+
+
+func _build_num_popup() -> void:
+	_num_popup = PopupPanel.new()
+	add_child(_num_popup)
+	var vb := VBoxContainer.new()
+	_num_popup.add_child(vb)
+	_num_lbl = Label.new()
+	vb.add_child(_num_lbl)
+	var row := HBoxContainer.new()
+	vb.add_child(row)
+	_num_min = _make_num_spin()
+	_num_max = _make_num_spin()
+	row.add_child(_num_min)
+	var dash := Label.new(); dash.text = "to"; row.add_child(dash)
+	row.add_child(_num_max)
+	var clearb := Button.new()
+	clearb.text = "Clear"
+	clearb.pressed.connect(_on_num_filter_clear)
+	row.add_child(clearb)
+	_num_min.value_changed.connect(func(v): _on_num_filter_changed())
+	_num_max.value_changed.connect(func(v): _on_num_filter_changed())
+
+
+func _make_num_spin() -> SpinBox:
+	var s := SpinBox.new()
+	s.min_value = -1000000.0
+	s.max_value = 1000000000.0
+	s.step = 0.1
+	s.custom_minimum_size = Vector2(110, 0)
+	return s
+
+
+func _on_num_filter_changed() -> void:
+	if _num_popup_col < 0:
+		return
+	_filter_min[_num_popup_col] = _num_min.value
+	_filter_max[_num_popup_col] = _num_max.value
+	_mark_num_btn(_num_popup_col)
+	_apply()
+
+
+func _on_num_filter_clear() -> void:
+	if _num_popup_col < 0:
+		return
+	_filter_min.erase(_num_popup_col)
+	_filter_max.erase(_num_popup_col)
+	_mark_num_btn(_num_popup_col)
+	_num_popup.hide()
+	_apply()
+
+
+func _mark_num_btn(col: int) -> void:
+	var b: Variant = _colfilters.get(col)
+	if b is Button:
+		var active: bool = _filter_min.has(col) or _filter_max.has(col)
+		b.text = ("%g–%g" % [_filter_min.get(col, 0.0), _filter_max.get(col, 0.0)]) if active else "min–max"
+
+
+# Position each filter control over its column (tracks resize + horizontal scroll).
+func _layout_filter_header() -> void:
+	if _filter_header == null:
+		return
+	var h := _filter_header.size.y
+	var x := -float(_tree.get_scroll().x) if _tree else 0.0
+	for col in COL_COUNT:
+		var ctrl: Variant = _colfilters.get(col)
+		if ctrl != null:
+			ctrl.position = Vector2(x + 1.0, 2.0)
+			ctrl.size = Vector2(maxf(8.0, _col_w[col] - 2.0), h - 4.0)
+		x += _col_w[col]
+
+
+# Does a row pass every active per-column filter?
+func _passes_col_filters(rec: Dictionary) -> bool:
+	for col in _filter_text:                       # substring (text columns)
+		if not _filter_string_value(rec, col).to_lower().contains(String(_filter_text[col])):
+			return false
+	for col in _filter_set:                        # allow-set (tick columns)
+		if not _filter_set[col].has(_filter_string_value(rec, col)):
+			return false
+	for col in _filter_min:                        # numeric range
+		var v := float(_sort_value(rec, col))
+		if v < float(_filter_min[col]) or v > float(_filter_max.get(col, 1e18)):
+			return false
+	return true
 
 
 func _build_keyword_panel() -> Control:
@@ -922,7 +1115,7 @@ func _load_index() -> void:
 	_status_label.text = "Library root: %s   |   indexed %s" % [
 		_library_root, str(data.get("generated", "?"))
 	]
-	_populate_filters()
+	_build_filter_controls()
 	_build_keywords()
 	_apply()
 
@@ -1020,30 +1213,6 @@ func _on_keyword_clicked(index: int, _at: Vector2, _mouse_btn: int) -> void:
 	_apply()
 
 
-func _populate_filters() -> void:
-	_fill_option(_bundle_opt, "bundle", true)
-	_fill_option(_supplier_opt, "supplier", false)
-	_fill_option(_library_opt, "library", false)
-	_fill_option(_ext_opt, "ext", false)
-
-
-func _fill_option(opt: OptionButton, field: String, short: bool) -> void:
-	var seen := {}
-	for rec in _all:
-		var v := String(rec.get(field, ""))
-		if v != "":
-			seen[v] = true
-	var values := seen.keys()
-	values.sort_custom(func(a, b): return a.naturalnocasecmp_to(b) < 0)
-	opt.clear()
-	opt.add_item("All %s" % field.capitalize())
-	opt.set_item_metadata(0, "")
-	for v in values:
-		var disp: String = _short_bundle(v) if short else String(v)
-		opt.add_item(disp)
-		opt.set_item_metadata(opt.item_count - 1, v)
-
-
 # ===========================================================================
 #  Filtering / sorting
 # ===========================================================================
@@ -1067,28 +1236,12 @@ func _on_semantic_submitted(text: String) -> void:
 
 func _on_clear() -> void:
 	_search.text = ""
-	for o in [_bundle_opt, _supplier_opt, _library_opt, _ext_opt]:
-		o.select(0)
+	_filter_text = {}
+	_filter_set = {}
+	_filter_min = {}
+	_filter_max = {}
+	_build_filter_controls()                       # reset every column control's UI
 	_apply()
-
-
-func _selected_meta(opt: OptionButton) -> String:
-	var i := opt.get_selected()
-	return String(opt.get_item_metadata(i)) if i >= 0 else ""
-
-
-# The dropdown (Bundle/Supplier/Library/Type) filters, shared by keyword + semantic.
-func _passes_dropdown_filters(rec: Dictionary) -> bool:
-	var f_bundle := _selected_meta(_bundle_opt)
-	if f_bundle != "" and String(rec.get("bundle", "")) != f_bundle:
-		return false
-	if _selected_meta(_supplier_opt) != "" and String(rec.get("supplier", "")) != _selected_meta(_supplier_opt):
-		return false
-	if _selected_meta(_library_opt) != "" and String(rec.get("library", "")) != _selected_meta(_library_opt):
-		return false
-	if _selected_meta(_ext_opt) != "" and String(rec.get("ext", "")) != _selected_meta(_ext_opt):
-		return false
-	return true
 
 
 # The text box filters the BASE set: the semantic results (in rank order) when a
@@ -1098,7 +1251,7 @@ func _apply() -> void:
 	var tokens := _search.text.strip_edges().to_lower().split(" ", false)
 	_filtered = []
 	for rec in base:
-		if not _passes_dropdown_filters(rec):
+		if not _passes_col_filters(rec):
 			continue
 		if tokens.size() > 0:
 			var hay := (
@@ -1813,6 +1966,7 @@ func _input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	_update_rating_hover()
+	_layout_filter_header()                        # keep filters aligned over columns
 	# playback cursor + play dot on the visualiser, when the loaded file is the one
 	# shown in the analyser (playing OR paused).
 	if _graph and not _an_levels.is_empty():

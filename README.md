@@ -67,7 +67,12 @@ or:
   show most-relevant first with a **Score** (cosine) column; then use the **Filter**
   box and dropdowns to narrow *within* the semantic results. Click **Update index**
   (or run `py indexer/embed.py`) to embed any new/chopped files first.
-- **Filter** — Bundle / Supplier / Library / Type dropdowns.
+- **Filter** — a global quick-filter box (matches filename/library/supplier/
+  description/tags), plus **per-column filters** in a row above the table, each
+  of the type that suits the column: a **text** box for high-cardinality strings
+  (Filename, Library, Supplier, Tags), **tick-boxes** for low-cardinality ones
+  (Bundle), and a **min–max** range popup for numbers (Duration, Size, dB, Score,
+  …). They combine (AND), and narrow semantic results too. "Clear filters" resets.
 - **Sort** — click any column header (click again to reverse).
 - **Audition** — select a row (autoplay) or double-click; transport bar has
   play/pause, stop, seek and volume. **Space** toggles play/pause from anywhere
