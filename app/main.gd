@@ -491,6 +491,8 @@ var _sl_busy: bool = false
 var _sl_result_path: String = ""
 var _ctx_menu: PopupMenu               # right-click row context menu
 var _ctx_rec: Variant = null           # the row it was opened on
+var _rmb_snapshot: Array = []          # selection captured on right-press (before rmb collapse)
+var _rmb_keep: bool = false            # clicked row was part of the multi-selection
 var _pending_ctx: String = ""          # action to run once analysis of _ctx_rec finishes
 var _ctx_after_suggest: bool = false   # bake the loop once Suggest loop lands (Make loop)
 var _convert_thread: Thread = null     # non-WAV (mp3/…) -> sibling WAV decode
@@ -2457,8 +2459,11 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
 	if mouse_btn == MOUSE_BUTTON_RIGHT and typeof(rec) == TYPE_DICTIONARY:
-		# right-click any other cell: select this row + open the context menu
-		if not it.is_selected(0):
+		# Keep the whole multi-selection when you right-click a row that was part of
+		# it (the tree just collapsed it); otherwise select just the clicked row.
+		if _rmb_keep and _rmb_snapshot.size() > 1:
+			_restore_selection(_rmb_snapshot)
+		elif not it.is_selected(0):
 			_tree.deselect_all()
 			it.select(0)
 		_refresh_star_buttons(rec)
@@ -2600,6 +2605,13 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 	# proceeds normally to start a fresh selection).
 	if event is InputEventMouseButton and event.pressed and _cell_edit_active:
 		_commit_cell_edit()
+	# Right-press: snapshot the selection BEFORE the tree's rmb-select collapses it,
+	# so a right-click on an already-selected row keeps the whole multi-selection for
+	# the context-menu action. (gui_input runs before the Tree's own handler.)
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		_rmb_snapshot = _selected_paths()
+		var hit := _tree.get_item_at_position(event.position)
+		_rmb_keep = hit != null and typeof(hit.get_metadata(0)) == TYPE_DICTIONARY and hit.is_selected(0)
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			var c := _divider_at(event.position)
@@ -4267,6 +4279,33 @@ func _save_index() -> void:
 	if FileAccess.file_exists(path):
 		DirAccess.remove_absolute(path)
 	DirAccess.rename_absolute(tmp, path)
+
+
+# Rel paths of every currently-selected row.
+func _selected_paths() -> Array:
+	var out: Array = []
+	var it := _tree.get_next_selected(null)
+	while it != null:
+		var r: Variant = it.get_metadata(0)
+		if typeof(r) == TYPE_DICTIONARY:
+			out.append(String(r.get("path", "")))
+		it = _tree.get_next_selected(it)
+	return out
+
+
+# Re-select the rows whose paths are in `paths` (restores a snapshot).
+func _restore_selection(paths: Array) -> void:
+	var want := {}
+	for p in paths:
+		want[String(p)] = true
+	_tree.deselect_all()
+	var root := _tree.get_root()
+	var it := root.get_first_child() if root else null
+	while it != null:
+		var r: Variant = it.get_metadata(0)
+		if typeof(r) == TYPE_DICTIONARY and want.has(String(r.get("path", ""))):
+			it.select(0)
+		it = it.get_next()
 
 
 # Find the row with this rel path, select it and scroll it into view.
