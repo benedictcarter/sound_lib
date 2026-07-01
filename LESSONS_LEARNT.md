@@ -9,6 +9,16 @@ channel count, so `str(rec["bit_depth"])` printed "24.0" in the table.
 JSON has no int/float distinction on parse — everything numeric is a float.)
 Cost: a wrong-looking column on the first screenshot.
 
+## Godot Tree right-click is dead unless `allow_rmb_select = true`
+`Tree.item_mouse_selected(pos, button_index)` — the signal you hook for a row
+context menu (and it's the ONLY place you learn which mouse button was used) — is
+NOT emitted on right-click by default, because `allow_rmb_select` defaults to
+`false`. Symptom: right-click does absolutely nothing (no menu, no rating-clear),
+with no error. **Fix:** `_tree.allow_rmb_select = true`. (It also makes rmb select
+the row, so a menu handler can act on the clicked row.) Cost: shipped a context
+menu + rating right-click-clear that both silently no-op'd until a user reported
+"right-click does nothing."
+
 ## Godot Tree `expand` columns push trailing fixed columns off-screen
 With `set_column_expand(filename, true)`, the expand column grew to consume
 nearly the whole viewport, shoving the 5 trailing fixed-width numeric columns
