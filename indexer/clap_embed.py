@@ -1,9 +1,9 @@
 """
 OPTIONAL CLAP content search — via ONNX, NO PyTorch. Runs the community ONNX export
 of laion/clap-htsat-unfused (Xenova/clap-htsat-unfused) on onnxruntime. The audio
-mel features are built in numpy with transformers.audio_utils (matching CLAP's
-ClapFeatureExtractor rand_trunc/repeatpad path exactly); text uses the fast tokenizer.
-No torch anywhere. Embeds each file's AUDIO into a joint audio+text space so "Find
+mel features are built in numpy with vendored DSP (indexer/_clap_dsp.py, matching
+CLAP's ClapFeatureExtractor rand_trunc/repeatpad path exactly); text uses the
+`tokenizers` lib. No torch, no transformers. Embeds each file's AUDIO into a joint audio+text space so "Find
 similar" ranks by the actual sound, and text queries can search audio by meaning.
 
 Models are DOWNLOADED ON DEMAND into <repo>/models/clap (gitignored): audio encoder
@@ -213,7 +213,7 @@ def main() -> None:
         try:
             download()
         except ImportError:
-            _err(args.result, "CLAP (ONNX) needs onnxruntime + transformers + huggingface_hub — "
+            _err(args.result, "CLAP (ONNX) needs onnxruntime + tokenizers + huggingface_hub — "
                               "pip install -r indexer/requirements-clap.txt")
             raise SystemExit("missing deps")
         except Exception as e:  # noqa: BLE001

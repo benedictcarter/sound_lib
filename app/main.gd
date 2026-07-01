@@ -116,7 +116,7 @@ Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (
 • [b]Semantic[/b] (words → text): search line 1 — matches the meaning of the metadata.
 • [b]CLAP[/b] (words → sound): search line 2 — matches the actual audio. Needs CLAP built.
 • [b]Find similar[/b] (sound → sound): right-click a file → ranks the library by how it SOUNDS. Uses [b]Update fingerprints[/b] (tiny, no extra deps) or CLAP if built (much stronger, auto-preferred).
-[i]CLAP setup:[/i] pip-install requirements-clap.txt (onnxruntime, NO PyTorch), then [b]Download CLAP[/b] → [b]Build CLAP index[/b]. Uses your GPU if onnxruntime-directml/-gpu is installed.
+[i]CLAP setup:[/i] click [b]Download CLAP[/b] → [b]Build CLAP index[/b]. In the standalone build it's ready to go; on the source build first run pip install -r indexer/requirements-clap.txt. Uses your GPU if onnxruntime-directml/-gpu is installed.
 
 [b]The index buttons (search-bar rows) — run once, incremental after[/b]
 • [b]Update semantic index[/b]: embeds each file's TEXT (name/description) so Semantic search works. Fast; re-run after adding files.
@@ -906,10 +906,10 @@ func _build_ui() -> void:
 
 	_clap_dl_btn = Button.new()
 	_clap_dl_btn.text = "Download CLAP"
-	_clap_dl_btn.tooltip_text = "OPTIONAL: download the CLAP ONNX model (~120 MB audio " \
-		+ "+ ~500 MB text; NO PyTorch — pip install -r indexer/requirements-clap.txt for " \
-		+ "onnxruntime+transformers). Enables the sound-search box + a stronger Find " \
-		+ "similar. Goes in <repo>/models (gitignored, not shipped)."
+	_clap_dl_btn.tooltip_text = "Download the CLAP model (~120 MB audio + ~500 MB text; " \
+		+ "ONNX, no PyTorch) → enables the CLAP sound-search box + a much stronger Find " \
+		+ "similar. In the standalone build the code is bundled — just click this, then " \
+		+ "Build CLAP index. (Source build: pip install -r indexer/requirements-clap.txt first.)"
 	_clap_dl_btn.pressed.connect(_download_clap)
 	barclap.add_child(_clap_dl_btn)
 
@@ -1888,7 +1888,7 @@ func _clap_search_finished() -> void:
 		elif err == "no text model":
 			_status_label.text = "CLAP text model missing — click 'Download CLAP'."
 		elif err == "deps":
-			_status_label.text = "CLAP needs onnxruntime + transformers — pip install -r indexer/requirements-clap.txt"
+			_status_label.text = "CLAP needs onnxruntime + tokenizers — pip install -r indexer/requirements-clap.txt"
 		else:
 			_status_label.text = "CLAP search error: %s" % err
 		return
@@ -2149,7 +2149,7 @@ func _clap_dl_finished() -> void:
 	_clap_dl_btn.disabled = false
 	_clap_dl_btn.text = "Download CLAP"
 	var ok := false
-	var err := "CLAP needs torch + transformers — pip install -r indexer/requirements-clap.txt"
+	var err := "CLAP needs onnxruntime + tokenizers — pip install -r indexer/requirements-clap.txt"
 	if FileAccess.file_exists(_clap_dl_result_path):
 		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clap_dl_result_path))
 		if typeof(d) == TYPE_DICTIONARY:
