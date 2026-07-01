@@ -124,18 +124,21 @@ def main() -> None:
                     help="only files missing a chop OR loudness entry")
     ap.add_argument("--progress", default=None)
     ap.add_argument("--renames", default=None, help="write the list of renamed files here")
+    ap.add_argument("--paths", default=None,
+                    help="JSON file with a list of rel paths -> analyse ONLY those (e.g. new chops/loops)")
     args = ap.parse_args()
 
     idx = json.loads(INDEX.read_text(encoding="utf-8"))
     root = Path(idx["library_root"])
 
-    # First, rename any files with invalid characters in their names (safeguard),
-    # then analyse. Report the renames so the app can summarise them in a dialog.
-    renames = sanitize_filenames(idx, root)
-    if args.renames:
-        Path(args.renames).write_text(json.dumps(renames), encoding="utf-8")
-    if renames:
-        print(f"Renamed {len(renames)} file(s) with invalid characters.")
+    # For a full / only-missing run, first rename any files with invalid characters
+    # (safeguard) and report them. Skip that scan for a targeted --paths run.
+    if not args.paths:
+        renames = sanitize_filenames(idx, root)
+        if args.renames:
+            Path(args.renames).write_text(json.dumps(renames), encoding="utf-8")
+        if renames:
+            print(f"Renamed {len(renames)} file(s) with invalid characters.")
 
     chop_path = root / "chopping.json"
     loud_path = root / "loudness.json"
@@ -143,7 +146,10 @@ def main() -> None:
     loud = _load(loud_path)
     files = [r for r in idx["files"] if r.get("ext") == "wav"]
 
-    if args.only_missing:
+    if args.paths:                              # analyse exactly the given files
+        wanted = set(json.loads(Path(args.paths).read_text(encoding="utf-8")))
+        todo = [r for r in files if r["path"] in wanted]
+    elif args.only_missing:
         todo = [r for r in files if r["path"] not in chop or r["path"] not in loud]
     else:
         todo = files

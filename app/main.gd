@@ -455,6 +455,10 @@ var _sg_renames_path: String = ""         # analyse job's invalid-name rename re
 var _lib_picker: FileDialog               # "Choose library folder" directory picker
 var _reindex_thread: Thread = null        # re-index after changing the library folder
 var _reindex_busy: bool = false
+var _pa_thread: Thread = null             # targeted analyse of new chops/loops
+var _pa_busy: bool = false
+var _pa_paths_file: String = ""
+var _pa_pending: Array = []               # rel paths queued while a run is in flight
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -581,6 +585,7 @@ func _ready() -> void:
 	_sl_result_path = ProjectSettings.globalize_path("user://suggest_loop.json")
 	_convert_result_path = ProjectSettings.globalize_path("user://to_wav_result.json")
 	_sg_renames_path = ProjectSettings.globalize_path("user://analyse_renames.json")
+	_pa_paths_file = ProjectSettings.globalize_path("user://analyse_paths.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
@@ -3188,6 +3193,63 @@ func _sg_finished() -> void:
 	_report_renames()                          # if the job renamed invalid-named files
 
 
+# Analyse EXACTLY these files (chops + loudness) in a thread — used to auto-fill the
+# dB / Chop columns for freshly made chops/loops. Coalesces if one is already running.
+func _analyse_paths(paths: Array) -> void:
+	if paths.is_empty():
+		return
+	if _pa_busy or _sg_busy:
+		for p in paths:
+			if not _pa_pending.has(p):
+				_pa_pending.append(p)
+		return
+	var f := FileAccess.open(_pa_paths_file, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(paths))
+	f.close()
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/analyse_audio.py").simplify_path()
+	_pa_busy = true
+	_an_status.text = "Analysing %d new file%s…" % [paths.size(), "" if paths.size() == 1 else "s"]
+	_pa_thread = Thread.new()
+	_pa_thread.start(_pa_run.bind(script, _pa_paths_file))
+
+
+func _paths_of(recs: Array) -> Array:
+	var out: Array = []
+	for r in recs:
+		if typeof(r) == TYPE_DICTIONARY:
+			out.append(String(r.get("path", "")))
+	return out
+
+
+func _pa_run(script: String, paths_file: String) -> void:
+	var output: Array = []
+	var args := [script, "--paths", paths_file]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_pa_finished")
+
+
+func _pa_finished() -> void:
+	_pa_busy = false
+	if _pa_thread:
+		_pa_thread.wait_to_finish()
+		_pa_thread = null
+	_load_chopping()
+	_load_loudness()
+	_reload_chop_cells()
+	_reload_loudness_cells()
+	_recompute_targets()                       # level'd rows -> Gain dB now they're measured
+	_an_status.text = "New chops/loops analysed (dB + chops filled)."
+	if not _pa_pending.is_empty():             # analyse anything queued while we ran
+		var next := _pa_pending
+		_pa_pending = []
+		_analyse_paths(next)
+
+
 # If the analyse job renamed files with invalid characters, reload the path-keyed
 # stores (they were migrated on disk) and summarise the renames in a dialog.
 func _report_renames() -> void:
@@ -3504,6 +3566,7 @@ func _chop_finished() -> void:
 	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
 	_an_status.text = "Chopped into %d pieces — added to the library (original kept).%s" % [
 		recs.size(), tag_note]
+	_analyse_paths(_paths_of(recs))          # auto-fill dB + chop columns for the new chops
 
 
 # ----- right-click context menu ---------------------------------------------
@@ -3887,6 +3950,7 @@ func _loop_finished() -> void:
 	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
 	_an_status.text = "Seamless loop added (%.2fs, %.0f ms xfade) — original kept.%s" % [
 		float(d.get("out_duration", 0.0)), float(d.get("xfade_ms", 0.0)), tag_note]
+	_analyse_paths(_paths_of(recs))             # auto-fill dB + chop columns for the loop
 
 
 # Give each new record (e.g. fresh chops) the parent's tags in userdata, keyed by
@@ -3982,6 +4046,8 @@ func _exit_tree() -> void:
 		_sl_thread.wait_to_finish()
 	if _reindex_thread and _reindex_thread.is_started():
 		_reindex_thread.wait_to_finish()
+	if _pa_thread and _pa_thread.is_started():
+		_pa_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
