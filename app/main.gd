@@ -118,6 +118,14 @@ Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (
 • [b]Find similar[/b] (sound → sound): right-click a file → ranks the library by how it SOUNDS. Uses [b]Update fingerprints[/b] (tiny, no extra deps) or CLAP if built (much stronger, auto-preferred).
 [i]CLAP setup:[/i] pip-install requirements-clap.txt (onnxruntime, NO PyTorch), then [b]Download CLAP[/b] → [b]Build CLAP index[/b]. Uses your GPU if onnxruntime-directml/-gpu is installed.
 
+[b]The index buttons (search-bar rows) — run once, incremental after[/b]
+• [b]Update semantic index[/b]: embeds each file's TEXT (name/description) so Semantic search works. Fast; re-run after adding files.
+• [b]Update fingerprints[/b]: builds a tiny per-file acoustic fingerprint (reads the audio) so right-click → Find similar works with no extra install.
+• [b]Download CLAP[/b]: fetches the optional CLAP model (ONNX, no PyTorch) — enables the CLAP sound-search box and a much stronger Find similar.
+• [b]Build CLAP index[/b]: embeds every file's audio with CLAP (uses your GPU) so CLAP search + Find similar use it. Do it after Download CLAP.
+• [b]Analyse Audio[/b] (top row): fills the loudness (orig/final dB) + Chop columns.
+Each only processes files it hasn't done yet, so re-running is cheap.
+
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
 
@@ -846,6 +854,14 @@ func _build_ui() -> void:
 	_emb_btn.pressed.connect(_update_embeddings)
 	bar0.add_child(_emb_btn)
 
+	_fp_btn = Button.new()
+	_fp_btn.text = "Update fingerprints"
+	_fp_btn.tooltip_text = "Build the tiny acoustic fingerprint for any file that lacks " \
+		+ "one (reads its audio). Powers right-click → Find similar when CLAP isn't built. " \
+		+ "Slow on a fresh library; incremental after."
+	_fp_btn.pressed.connect(_update_fingerprints)
+	bar0.add_child(_fp_btn)
+
 	_sem_edit = LineEdit.new()
 	_sem_edit.placeholder_text = "Semantic (words): describe a sound — \"guns shooting\" — Enter. Matches the MEANING of the text."
 	_sem_edit.clear_button_enabled = true
@@ -858,14 +874,6 @@ func _build_ui() -> void:
 	var barclap := HBoxContainer.new()
 	barclap.add_theme_constant_override("separation", 8)
 	root.add_child(barclap)
-
-	_fp_btn = Button.new()
-	_fp_btn.text = "Update fingerprints"
-	_fp_btn.tooltip_text = "Build the tiny acoustic fingerprint for any file that lacks " \
-		+ "one (reads its audio). Powers right-click → Find similar when CLAP isn't built. " \
-		+ "Slow on a fresh library; incremental after."
-	_fp_btn.pressed.connect(_update_fingerprints)
-	barclap.add_child(_fp_btn)
 
 	_clap_dl_btn = Button.new()
 	_clap_dl_btn.text = "Download CLAP"
