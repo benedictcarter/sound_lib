@@ -96,10 +96,13 @@ for non-obvious gotchas.
   `_suggest_loop` -> `_ctx_after_suggest` -> `_make_loop` (bakes in `_sl_finished`);
   Make chops -> `_chop_selected`. Convert to WAV -> `_convert_to_wav`. For a non-WAV
   row the loop/chop/suggest actions auto-decode to a sibling WAV first, then continue.
-  **Convert to 16-bit** -> `_convert_16bit` -> `indexer/to_16bit.py` writes a
-  `<stem>_16bit.wav` COPY (PCM_16, SAME sample rate; original kept), inherits
-  tags/metadata, merges + auto-analyses (guarded to bit_depth > 16). Chops + loops
-  are ALWAYS written 16-bit now (`chop.py`/`loopify.py` force `subtype="PCM_16"`).
+  **Convert to 16-bit** -> `_convert_16bit_selected` (BULK, over the whole tree
+  selection) -> `indexer/to_16bit.py --spec <list>` writes a `<stem>_16bit.wav` COPY
+  each (PCM_16, SAME sample rate; original kept). Skips files that are <= 16-bit OR
+  already have a `_16bit.wav` (checked both in `_by_path` and on disk, and again in
+  the script) — no-op for those. Threaded + polled (`_to16_*`), merges, per-file tag
+  inherit, auto-analyses the copies. Chops + loops are ALWAYS 16-bit now
+  (`chop.py`/`loopify.py` force `subtype="PCM_16"`).
   **Delete** (menu item OR the **Del** key when the selection is NOT editable cells —
   editable-cell Del still clears them): `_confirm_delete_selected` shows a Yes/No
   `ConfirmationDialog`; `_do_delete_confirmed` moves the selected files to the
