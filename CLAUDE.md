@@ -12,6 +12,16 @@ for non-obvious gotchas.
 - `library.cfg` — JSON pointing at the audio library root.
 
 ## Key facts
+- **Non-WAV audio (mp3/ogg/flac/aiff…)**: the app is WAV-centric (Godot playback +
+  in-memory PCM slicing for chop/loop/preview). `index.parse_audio` reads non-WAV
+  tech metadata via soundfile (so the row shows duration/rate/ch; bit_depth None for
+  lossy). To USE one, **decode it to a sibling `<stem>.wav`**: `indexer/to_wav.py`
+  (PCM_16, peak-normalised so MP3 intersample overshoot >1.0 doesn't clip; inherits
+  the source's bundle/library/supplier; adds to index, no re-scan). In-app: the row
+  right-click has **Convert to WAV**, and the loop/chop actions auto-decode first
+  (`_ctx_run` -> `_sibling_wav_rec` reuse, else `_convert_to_wav`/`_convert_finished`,
+  then re-run on the WAV). `_play_selected` auditions **mp3 directly** via
+  `AudioStreamMP3` (loop via its `.loop`); everything else uses the decoded WAV.
 - **Audio is OUTSIDE the repo** in `S:\code\sound_lib_data`. Repo = code only.
   `.gitignore` also excludes audio extensions as a safeguard.
 - `index.json` is generated (gitignored); it carries `library_root`, so the
@@ -79,7 +89,8 @@ for non-obvious gotchas.
   failed analysis drops it. Suggest loop -> `_suggest_loop` (auto-previews looped);
   Suggest chops -> `_apply_suggested` + `_play_chops` on Loop; Make loop chains
   `_suggest_loop` -> `_ctx_after_suggest` -> `_make_loop` (bakes in `_sl_finished`);
-  Make chops -> `_chop_selected`.
+  Make chops -> `_chop_selected`. Convert to WAV -> `_convert_to_wav`. For a non-WAV
+  row the loop/chop/suggest actions auto-decode to a sibling WAV first, then continue.
 - **Keyword panel** computed in-app at load (`_build_keywords`): tokens from
   filename + library, de-duped per library; frequency = #libraries containing
   the token. Click appends the token to the search box (AND quick-filter).
@@ -229,6 +240,7 @@ for non-obvious gotchas.
 - Combined analysis (what the app runs): `py indexer/analyse_audio.py`  (chops + loudness, one read/file)
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
+- Decode a non-WAV (mp3/…) to a sibling WAV: `py indexer/to_wav.py <src> <result.json>`
 - Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json]`
 - Bake a seamless loop: `py indexer/loopify.py <audio> <spec.json> <result.json>`
 - Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)

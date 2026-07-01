@@ -98,6 +98,27 @@ def parse_wav(path: Path) -> dict:
     return info
 
 
+_SUBTYPE_BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24,
+                 "PCM_32": 32, "FLOAT": 32, "DOUBLE": 64}
+
+
+def parse_audio(path: Path) -> dict:
+    """Technical metadata for a non-WAV audio file via soundfile (header only, no
+    samples read). MP3/OGG etc. have no PCM bit depth, so bit_depth stays None."""
+    info = {"sample_rate": None, "bit_depth": None, "channels": None,
+            "duration": None, "description": ""}
+    try:
+        import soundfile as sf
+        i = sf.info(str(path))
+        info["sample_rate"] = i.samplerate
+        info["channels"] = i.channels
+        info["duration"] = round(i.frames / i.samplerate, 3) if i.samplerate else None
+        info["bit_depth"] = _SUBTYPE_BITS.get(i.subtype)
+    except Exception:  # noqa: BLE001  (missing lib / unreadable -> blank metadata)
+        pass
+    return info
+
+
 # --------------------------------------------------------------------------- #
 # Tracklist parsing  (filename -> {library, supplier, url})
 # --------------------------------------------------------------------------- #
@@ -272,10 +293,7 @@ def main() -> None:
             reused += 1
         else:
             ext = p.suffix.lower()
-            tech = parse_wav(p) if ext == ".wav" else {
-                "sample_rate": None, "bit_depth": None, "channels": None,
-                "duration": None, "description": "",
-            }
+            tech = parse_wav(p) if ext == ".wav" else parse_audio(p)
             bundle, f_sup, f_lib = folder_fallback(list(rel.parts))
             meta = tracks.get(p.name.lower(), {})
             rec = {

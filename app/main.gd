@@ -441,6 +441,10 @@ var _ctx_menu: PopupMenu               # right-click row context menu
 var _ctx_rec: Variant = null           # the row it was opened on
 var _pending_ctx: String = ""          # action to run once analysis of _ctx_rec finishes
 var _ctx_after_suggest: bool = false   # bake the loop once Suggest loop lands (Make loop)
+var _convert_thread: Thread = null     # non-WAV (mp3/…) -> sibling WAV decode
+var _convert_busy: bool = false
+var _convert_result_path: String = ""
+var _convert_then: String = ""         # ctx action to run once the decode lands
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -565,6 +569,7 @@ func _ready() -> void:
 	_loop_spec_path = ProjectSettings.globalize_path("user://loop_spec.json")
 	_loop_result_path = ProjectSettings.globalize_path("user://loop_result.json")
 	_sl_result_path = ProjectSettings.globalize_path("user://suggest_loop.json")
+	_convert_result_path = ProjectSettings.globalize_path("user://to_wav_result.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
@@ -812,6 +817,8 @@ func _build_ui() -> void:
 	_ctx_menu.add_separator()
 	_ctx_menu.add_item("Make loop", 4)
 	_ctx_menu.add_item("Make chops", 5)
+	_ctx_menu.add_separator()
+	_ctx_menu.add_item("Convert to WAV", 6)
 	_ctx_menu.id_pressed.connect(_on_ctx_menu)
 	add_child(_ctx_menu)
 
@@ -2172,6 +2179,28 @@ func _play_selected() -> void:
 	var abs := _abs_path(rec)
 	var ext := String(rec.get("ext", "")).to_lower()
 	_now_label.text = abs
+	if ext == "mp3":
+		# audition mp3 directly; chop/loop/analyse use the decoded WAV (Convert to WAV)
+		if not FileAccess.file_exists(abs):
+			_now_label.text = "File not found (library moved?): %s" % abs
+			return
+		var mp3 := AudioStreamMP3.new()
+		mp3.data = FileAccess.get_file_as_bytes(abs)
+		if mp3.data.is_empty():
+			_now_label.text = "Could not read mp3: %s" % abs
+			return
+		mp3.loop = _loop_on
+		_player.stream = mp3
+		_play_gain_db = _get_gain_db(rec)
+		_apply_volume()
+		_player.play()
+		_playing_chops = false
+		_stream_len = mp3.get_length()
+		_playing_rec = rec
+		_playing_item = _tree.get_selected()
+		_play_btn.text = "Pause"
+		_now_label.text = "Playing (mp3):  %s" % String(rec.get("filename", ""))
+		return
 	if ext != "wav":
 		_now_label.text = "Preview supports WAV only (this is .%s):  %s" % [ext, abs]
 		return
@@ -2278,6 +2307,8 @@ func _on_loop_toggled(on: bool) -> void:
 	_loop_on = on
 	if _player.stream is AudioStreamWAV:
 		_set_stream_loop(_player.stream)       # apply to the current track live
+	elif _player.stream is AudioStreamMP3:
+		_player.stream.loop = on
 
 
 func _on_reveal() -> void:
@@ -3307,21 +3338,110 @@ func _on_ctx_menu(id: int) -> void:
 		3: _ctx_run("suggest_chops")
 		4: _ctx_run("make_loop")
 		5: _ctx_run("make_chops")
+		6:                                          # convert non-WAV -> sibling WAV
+			if String(_ctx_rec.get("ext", "")).to_lower() == "wav":
+				_an_status.text = "Already a WAV."
+			else:
+				_convert_to_wav(_ctx_rec, "")
 
 
-# Run a ctx action on _ctx_rec — analysing it first if it isn't the analysed file
-# yet (the action is queued and dispatched from _an_finished).
+# Run a ctx action on _ctx_rec. Non-WAV sources (mp3/…) are decoded to a sibling
+# WAV first (reused if it already exists), then the action runs on that WAV.
+# Actions that need analysis queue via _pending_ctx and dispatch from _an_finished.
 func _ctx_run(action: String) -> void:
 	if typeof(_ctx_rec) != TYPE_DICTIONARY:
 		return
 	if String(_ctx_rec.get("ext", "")).to_lower() != "wav":
-		_an_status.text = "That action supports WAV files only."
-		return
+		var wrec: Variant = _sibling_wav_rec(_ctx_rec)
+		if typeof(wrec) == TYPE_DICTIONARY:
+			_ctx_rec = wrec                         # already decoded -> use the WAV
+			_select_row_by_path(String(wrec.get("path", "")))
+		else:
+			_convert_to_wav(_ctx_rec, action)       # decode, then re-run on the WAV
+			return
 	if _ctx_rec == _an_rec and not _an_levels.is_empty() and not _an_busy:
 		_dispatch_ctx(action)                       # already analysed -> go now
 	else:
 		_pending_ctx = action                       # analyse first, then dispatch
 		_analyse_selected()                         # the ctx row is already selected
+
+
+# The sibling <stem>.wav record for a non-WAV rec, if it's already in the library.
+func _sibling_wav_rec(rec: Dictionary) -> Variant:
+	var p := String(rec.get("path", ""))
+	var dot := p.rfind(".")
+	if dot < 0:
+		return null
+	return _by_path.get(p.substr(0, dot) + ".wav")
+
+
+func _convert_to_wav(rec: Dictionary, then_action: String) -> void:
+	if _convert_busy:
+		return
+	var abs := _abs_path(rec)
+	if not FileAccess.file_exists(abs):
+		_an_status.text = "File not found: %s" % abs
+		return
+	if FileAccess.file_exists(_convert_result_path):
+		DirAccess.remove_absolute(_convert_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/to_wav.py").simplify_path()
+	_convert_busy = true
+	_convert_then = then_action
+	_an_status.text = "Decoding %s to WAV…" % String(rec.get("filename", ""))
+	_convert_thread = Thread.new()
+	_convert_thread.start(_convert_run.bind(script, abs, _convert_result_path))
+
+
+func _convert_run(script: String, audio: String, result: String) -> void:
+	var output: Array = []
+	var args := [script, audio, result]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_convert_finished")
+
+
+func _convert_finished() -> void:
+	_convert_busy = false
+	var then := _convert_then
+	_convert_then = ""
+	if _convert_thread:
+		_convert_thread.wait_to_finish()
+		_convert_thread = null
+	if not FileAccess.file_exists(_convert_result_path):
+		_an_status.text = "Convert to WAV failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_convert_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		_an_status.text = "Convert to WAV error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		return
+	var recs: Array = d.get("records", [])
+	_merge_new_records(recs)                        # the WAV row appears now
+	var wpath := String(d.get("out", ""))
+	_select_row_by_path(wpath)
+	var wrec: Variant = _by_path.get(wpath)
+	_an_status.text = "Decoded to WAV: %s" % wpath.get_file()
+	if then != "" and typeof(wrec) == TYPE_DICTIONARY:
+		_ctx_rec = wrec
+		_ctx_run(then)                              # continue the original action on the WAV
+
+
+# Find the row with this rel path, select it and scroll it into view.
+func _select_row_by_path(path: String) -> void:
+	var root := _tree.get_root()
+	if root == null:
+		return
+	var it := root.get_first_child()
+	while it != null:
+		var r: Variant = it.get_metadata(0)
+		if typeof(r) == TYPE_DICTIONARY and String(r.get("path", "")) == path:
+			_tree.deselect_all()
+			it.select(0)
+			_tree.scroll_to_item(it)
+			_refresh_star_buttons(r)
+			return
+		it = it.get_next()
 
 
 func _dispatch_ctx(action: String) -> void:
@@ -3575,6 +3695,10 @@ func _exit_tree() -> void:
 		_sem_thread.wait_to_finish()
 	if _emb_thread and _emb_thread.is_started():
 		_emb_thread.wait_to_finish()
+	if _convert_thread and _convert_thread.is_started():
+		_convert_thread.wait_to_finish()
+	if _sl_thread and _sl_thread.is_started():
+		_sl_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
