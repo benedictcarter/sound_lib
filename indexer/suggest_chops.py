@@ -19,6 +19,8 @@ changed. It never chops anything -- chopping is a separate, manual step.
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import sys
@@ -31,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import gaps as G
 from envelope import suggest_threshold, FLOOR_DB
 
-REPO = Path(__file__).parent.parent
+_REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
+REPO = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
 INDEX = REPO / "app" / "index.json"
 
 

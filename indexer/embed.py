@@ -27,7 +27,8 @@ import numpy as np
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 MODEL = "BAAI/bge-small-en-v1.5"
-REPO = Path(__file__).parent.parent
+_REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
+REPO = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
 INDEX = REPO / "app" / "index.json"
 
 

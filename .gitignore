@@ -6,6 +6,11 @@
 # catch stray copies only.
 *.npz
 
+# --- PyInstaller standalone build (frozen tool.exe + build cruft) ---
+/tool/
+/_pybuild/
+*.spec
+
 # --- Downloaded ML models (e.g. the ~1 GB CLAP model) — NEVER commit these ---
 /models/
 *.safetensors

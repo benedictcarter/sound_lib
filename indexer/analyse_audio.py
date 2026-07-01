@@ -28,7 +28,8 @@ import gaps as G
 import loud as L
 from envelope import suggest_threshold, FLOOR_DB
 
-REPO = Path(__file__).parent.parent
+_REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
+REPO = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
 INDEX = REPO / "app" / "index.json"
 
 # Characters that don't belong in a filename: control chars (they break JSON /

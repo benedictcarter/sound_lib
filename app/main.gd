@@ -687,6 +687,9 @@ func _ready() -> void:
 	_similar_result_path = ProjectSettings.globalize_path("user://similar_result.json")
 	_clap_dl_result_path = ProjectSettings.globalize_path("user://clap_download.json")
 	_clapidx_progress_path = ProjectSettings.globalize_path("user://clap_progress.json")
+	# So the indexer scripts / frozen tool.exe resolve app/index.json + library.cfg
+	# from the app's own location (globalize res://.. = the repo/dist root).
+	OS.set_environment("SOUNDLIB_REPO", _repo_root())
 	_load_userdata()
 	_load_chopping()
 	_load_loudness()
@@ -773,6 +776,32 @@ func _save_prefs() -> void:
 ## Directory for user data (ratings / play counts / tags) and analysis results:
 ## the library root from library.cfg (e.g. S:\code\sound_lib_data). Falls back to
 ## the project folder only if the config can't be read.
+# Repo/dist root that holds app/, indexer/, library.cfg (globalize res://.. ).
+func _repo_root() -> String:
+	return ProjectSettings.globalize_path("res://../").simplify_path()
+
+
+# The frozen standalone tool (bundles Python + deps), if present; else "".
+func _tool_exe() -> String:
+	var exe := _repo_root().path_join("tool/tool.exe")
+	return exe if FileAccess.file_exists(exe) else ""
+
+
+# Run an indexer command. args[0] is the .py script path used in dev (py script.py);
+# when the frozen tool.exe is present we call `tool.exe <cmd> <rest>` instead, so end
+# users need no Python. Output is captured in `output`.
+func _exec_tool(args: Array, output: Array) -> void:
+	var exe := _tool_exe()
+	if exe != "":
+		var a := args.slice(1)
+		a.insert(0, String(args[0]).get_file().get_basename())   # "search.py" -> "search"
+		OS.execute(exe, a, output, true)
+	else:
+		var code := OS.execute("py", args, output, true)
+		if code == -1:
+			OS.execute("python", args, output, true)
+
+
 func _data_dir() -> String:
 	var cfg := ProjectSettings.globalize_path("res://../library.cfg").simplify_path()
 	if FileAccess.file_exists(cfg):
@@ -1839,9 +1868,7 @@ func _run_clap_search(query: String) -> void:
 func _clap_search_run(script: String, query: String, out: String) -> void:
 	var output: Array = []
 	var args := [script, query, out, "500"]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_clap_search_finished")
 
 
@@ -1954,9 +1981,7 @@ func _run_semantic(query: String) -> void:
 func _sem_run(script: String, query: String, out: String) -> void:
 	var output: Array = []
 	var args := [script, query, out, "500"]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_sem_finished")
 
 
@@ -2015,9 +2040,7 @@ func _update_embeddings() -> void:
 func _emb_run(script: String, progress: String) -> void:
 	var output: Array = []
 	var args := [script, "--only-missing", "--progress", progress]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_emb_finished")
 
 
@@ -2067,9 +2090,7 @@ func _update_fingerprints() -> void:
 func _fp_run(script: String, progress: String) -> void:
 	var output: Array = []
 	var args := [script, "--only-missing", "--progress", progress]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_fp_finished")
 
 
@@ -2116,9 +2137,7 @@ func _download_clap() -> void:
 func _clap_dl_run(script: String, result: String) -> void:
 	var output: Array = []
 	var args := [script, "--download", "--result", result]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_clap_dl_finished")
 
 
@@ -2157,9 +2176,7 @@ func _build_clap_index() -> void:
 func _clapidx_run(script: String, progress: String) -> void:
 	var output: Array = []
 	var args := [script, "--only-missing", "--progress", progress]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_clapidx_finished")
 
 
@@ -2239,9 +2256,7 @@ func _convert_16bit_selected() -> void:
 func _to16_run(script: String, spec: String, result: String, progress: String) -> void:
 	var output: Array = []
 	var args := [script, "--spec", spec, "--progress", progress, result]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_to16_finished")
 
 
@@ -2311,9 +2326,7 @@ func _find_similar(rec: Dictionary) -> void:
 func _similar_run(script: String, rel: String, out: String) -> void:
 	var output: Array = []
 	var args := [script, rel, out, "500"]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_similar_finished")
 
 
@@ -3053,9 +3066,7 @@ func _reindex_library() -> void:
 
 func _reindex_run(script: String) -> void:
 	var output: Array = []
-	var code := OS.execute("py", [script], output, true)
-	if code == -1:
-		OS.execute("python", [script], output, true)
+	_exec_tool([script], output)
 	call_deferred("_reindex_finished")
 
 
@@ -3827,9 +3838,7 @@ func _paths_of(recs: Array) -> Array:
 func _pa_run(script: String, paths_file: String) -> void:
 	var output: Array = []
 	var args := [script, "--paths", paths_file]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_pa_finished")
 
 
@@ -4247,9 +4256,7 @@ func _convert_to_wav(rec: Dictionary, then_action: String) -> void:
 func _convert_run(script: String, audio: String, result: String) -> void:
 	var output: Array = []
 	var args := [script, audio, result]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_convert_finished")
 
 
@@ -4448,9 +4455,7 @@ func _suggest_loop() -> void:
 func _sl_run(script: String, audio: String, result: String) -> void:
 	var output: Array = []
 	var args := [script, audio, result]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_sl_finished")
 
 
@@ -4540,9 +4545,7 @@ func _make_loop() -> void:
 func _loop_run(script: String, audio: String, spec: String, result: String) -> void:
 	var output: Array = []
 	var args := [script, audio, spec, result]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:
-		OS.execute("python", args, output, true)
+	_exec_tool(args, output)
 	call_deferred("_loop_finished")
 
 

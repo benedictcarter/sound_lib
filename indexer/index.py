@@ -42,7 +42,8 @@ _CTRL_RE = _re.compile(r"[\x00-\x1f]")
 def _clean_text(s: str) -> str:
     return _CTRL_RE.sub(" ", s).strip()
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
+REPO_ROOT = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "library.cfg"
 # Index is written where the Godot app can load it via res://index.json
 OUTPUT_PATH = REPO_ROOT / "app" / "index.json"

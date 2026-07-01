@@ -16,6 +16,8 @@ incremental (by size):
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import sys
@@ -25,7 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import loud as L
 
-REPO = Path(__file__).parent.parent
+_REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
+REPO = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
 INDEX = REPO / "app" / "index.json"
 
 
