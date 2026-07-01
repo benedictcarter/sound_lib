@@ -447,6 +447,9 @@ var _convert_thread: Thread = null     # non-WAV (mp3/…) -> sibling WAV decode
 var _convert_busy: bool = false
 var _convert_result_path: String = ""
 var _convert_then: String = ""         # ctx action to run once the decode lands
+var _confirm_dialog: ConfirmationDialog  # Del -> yes/no delete-to-Recycle-Bin
+var _delete_pending: Array = []          # records awaiting delete confirmation
+var _index_generated: String = ""        # preserved index.json "generated" stamp
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -822,8 +825,18 @@ func _build_ui() -> void:
 	_ctx_menu.add_item("Make chops", 5)
 	_ctx_menu.add_separator()
 	_ctx_menu.add_item("Convert to WAV", 6)
+	_ctx_menu.add_separator()
+	_ctx_menu.add_item("Delete…", 7)
 	_ctx_menu.id_pressed.connect(_on_ctx_menu)
 	add_child(_ctx_menu)
+
+	# Delete confirmation (Del key or context menu) -> moves files to the Recycle Bin
+	_confirm_dialog = ConfirmationDialog.new()
+	_confirm_dialog.title = "Delete files"
+	_confirm_dialog.ok_button_text = "Yes"
+	_confirm_dialog.get_cancel_button().text = "No"
+	_confirm_dialog.confirmed.connect(_do_delete_confirmed)
+	add_child(_confirm_dialog)
 
 	_build_num_popup()
 
@@ -1409,6 +1422,7 @@ func _load_index() -> void:
 	for rec in _all:
 		_by_path[String(rec.get("path", ""))] = rec
 	_library_root = String(data.get("library_root", "")).replace("\\", "/")
+	_index_generated = str(data.get("generated", ""))
 	if _lib_label:
 		_lib_label.text = _library_root            # path shown next to Open folder
 	_status_label.text = "indexed %s" % str(data.get("generated", "?"))
@@ -2039,6 +2053,10 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 			var ecol := _selected_edit_col()
 			if event.keycode == KEY_DELETE and ecol >= 0:
 				_clear_selected_cells(ecol)
+				_tree.accept_event()
+				return
+			elif event.keycode == KEY_DELETE:      # non-editable selection -> delete file(s)
+				_confirm_delete_selected()
 				_tree.accept_event()
 				return
 			elif event.unicode >= 32 and ecol >= 0:
@@ -3367,6 +3385,8 @@ func _on_ctx_menu(id: int) -> void:
 				_an_status.text = "Already a WAV."
 			else:
 				_convert_to_wav(_ctx_rec, "")
+		7:                                          # delete (uses the current selection)
+			_confirm_delete_selected()
 
 
 # Run a ctx action on _ctx_rec. Non-WAV sources (mp3/…) are decoded to a sibling
@@ -3449,6 +3469,94 @@ func _convert_finished() -> void:
 	if then != "" and typeof(wrec) == TYPE_DICTIONARY:
 		_ctx_rec = wrec
 		_ctx_run(then)                              # continue the original action on the WAV
+
+
+# ----- delete selected files (Del / context menu) -> Recycle Bin, with confirm --
+func _confirm_delete_selected() -> void:
+	var recs: Array = []
+	var it := _tree.get_next_selected(null)
+	while it != null:
+		var r: Variant = it.get_metadata(0)
+		if typeof(r) == TYPE_DICTIONARY:
+			recs.append(r)
+		it = _tree.get_next_selected(it)
+	if recs.is_empty():
+		return
+	_delete_pending = recs
+	var shown := mini(recs.size(), 8)
+	var names := ""
+	for i in shown:
+		names += "\n•  " + String(recs[i].get("filename", ""))
+	if recs.size() > shown:
+		names += "\n…and %d more" % (recs.size() - shown)
+	_confirm_dialog.dialog_text = "Move %d file%s to the Recycle Bin?%s" % [
+		recs.size(), "" if recs.size() == 1 else "s", names]
+	_confirm_dialog.popup_centered()
+
+
+func _do_delete_confirmed() -> void:
+	var recs := _delete_pending
+	_delete_pending = []
+	if recs.is_empty():
+		return
+	var del_paths := {}
+	var failed := 0
+	for rec in recs:
+		var key := String(rec.get("path", ""))
+		var err := OS.move_to_trash(_abs_path(rec))   # Recycle Bin (recoverable)
+		if err == OK:
+			del_paths[key] = true
+			_userdata.erase(key)
+		else:
+			failed += 1
+	if del_paths.is_empty():
+		_status_label.text = "Delete failed (%d file(s) could not be moved to the Recycle Bin)." % failed
+		return
+	# stop/clear anything pointing at a deleted file
+	if typeof(_playing_rec) == TYPE_DICTIONARY and del_paths.has(String(_playing_rec.get("path", ""))):
+		_player.stop()
+		_playing_rec = null
+	if typeof(_an_rec) == TYPE_DICTIONARY and del_paths.has(String(_an_rec.get("path", ""))):
+		_an_rec = null
+		_an_levels = PackedFloat32Array()
+		_graph.levels = _an_levels
+		_graph.queue_redraw()
+	var kept: Array = []
+	for r in _all:
+		if not del_paths.has(String(r.get("path", ""))):
+			kept.append(r)
+	_all = kept
+	_by_path = {}
+	for r in _all:
+		_by_path[String(r.get("path", ""))] = r
+	_save_userdata()
+	_save_index()                                  # persist so they don't reappear on restart
+	_apply()
+	_status_label.text = "Deleted %d file(s) to the Recycle Bin%s." % [
+		del_paths.size(), ("  (%d failed)" % failed) if failed else ""]
+
+
+# Persist _all back to res://index.json (atomic-ish) so deletions/merges survive a
+# restart without a full re-index.
+func _save_index() -> void:
+	if _library_root == "":
+		return
+	var out := {
+		"library_root": _library_root,
+		"generated": _index_generated,
+		"count": _all.size(),
+		"files": _all,
+	}
+	var path := ProjectSettings.globalize_path("res://index.json")
+	var tmp := path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(out))
+	f.close()
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+	DirAccess.rename_absolute(tmp, path)
 
 
 # Find the row with this rel path, select it and scroll it into view.

@@ -91,6 +91,13 @@ for non-obvious gotchas.
   `_suggest_loop` -> `_ctx_after_suggest` -> `_make_loop` (bakes in `_sl_finished`);
   Make chops -> `_chop_selected`. Convert to WAV -> `_convert_to_wav`. For a non-WAV
   row the loop/chop/suggest actions auto-decode to a sibling WAV first, then continue.
+  **Delete** (menu item OR the **Del** key when the selection is NOT editable cells —
+  editable-cell Del still clears them): `_confirm_delete_selected` shows a Yes/No
+  `ConfirmationDialog`; `_do_delete_confirmed` moves the selected files to the
+  **Recycle Bin** (`OS.move_to_trash`, recoverable), erases their userdata, drops
+  them from `_all`/`_by_path`, stops playback/analyser if they pointed at a deleted
+  file, and persists via `_save_index` (rewrites `res://index.json` atomically from
+  `_all`, preserving `_index_generated`) so they don't reappear on restart.
 - **Keyword panel** computed in-app at load (`_build_keywords`): tokens from
   filename + library, de-duped per library; frequency = #libraries containing
   the token. Click appends the token to the search box (AND quick-filter).
