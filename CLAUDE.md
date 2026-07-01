@@ -142,6 +142,15 @@ for non-obvious gotchas.
   `requirements-clap.txt` (onnxruntime[+gpu/directml], transformers, huggingface_hub —
   no torch). ~0.18 s/file on GPU (~22 min full lib; mel preprocessing is the floor).
   Validated: minigun query -> machine-guns/miniguns/explosions (cos ~0.6).
+- **CLAP text->audio search** (search by SOUND from words): `indexer/clap_search.py
+  "<query>" <out> 500` embeds the query with the CLAP TEXT encoder (`clap_embed.
+  embed_text` via `text_model.onnx`) and ranks `clap.npz` by cosine -> paths+scores,
+  shown through `_apply_ranked_results` (same as semantic/find-similar). Its OWN
+  search box `_clap_edit` on a SEPARATE row below the semantic `_sem_edit` (the two
+  are mutually exclusive — submitting one clears the other; both feed `_sem_ranked`).
+  `_on_clap_submitted`/`_run_clap_search`/`_clap_search_finished`. Validated: "machine
+  gun firing"->MP40/miniguns, "rain and thunder storm"->rain+thunder, "a monster
+  growling"->zombie vocalisations.
 - **Semantic search** (meaning-based, NOT an LLM): `indexer/embed.py` embeds each
   file's text (filename+description+library+supplier) with a small local ONNX
   sentence model (fastembed, BAAI bge-small, 384-dim) -> `embeddings.npz` in the

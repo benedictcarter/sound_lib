@@ -79,7 +79,8 @@ const HELP_TEXT := "[b]Sound Library — what everything does[/b]
 • [b]Analyse Audio[/b]: for every file not analysed yet, reads its audio once and fills the [i]orig dB[/i] / [i]final dB[/i] (loudness) and [i]Chop[/i] columns. New chops/loops you make are auto-analysed on their own.
 
 [b]Searching & filtering[/b]
-• [b]Semantic search[/b] (top box): describe a sound in plain words (e.g. \"guns shooting\", \"creepy monster growl\") and press Enter. Ranks by meaning, not word-match, using a small local model (no internet). The [i]Score[/i] column shows the match; clearing the box (or its ✕) unsearches.
+• [b]Semantic search[/b] (first search line): describe a sound in words and press Enter. Ranks by the MEANING of the text (filename/description/library), not word-match — a small local model. Clearing the box (or its ✕) unsearches.
+• [b]CLAP sound search[/b] (second search line): describe a sound and press Enter — ranks by the actual SOUND (e.g. \"creepy metallic scrape\" finds files that sound like that, whatever they're named). Needs Download CLAP → Build CLAP index. The two search boxes are exclusive; the [i]Score[/i] column shows the match on either.
 • [b]Filter[/b] box: quick text filter over filename / library / supplier / description / tags (space = AND). It narrows the semantic results too.
 • [b]Per-column filters[/b] (row above the table): text box, tick-boxes, or a min–max range depending on the column. [b]Clear filters[/b] resets everything (and the semantic box).
 • [b]Sort[/b]: click a column header (again to reverse).
@@ -111,9 +112,11 @@ Click a row to auto-analyse and see it. Kept sound = [b]green[/b], removed = gre
 [b]Right-click a row[/b]
 Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (audition) · Make loop / chops · Convert to WAV · [b]Convert to 16-bit[/b] (copies the WHOLE selection, same rate; skips ones already 16-bit or done) · Delete. (Chops + loops you make are always 16-bit.)
 
-[b]Two ways to search by sound[/b]
-• [b]Semantic[/b] (text): describe it in words — matches meaning of the metadata.
-• [b]Find similar[/b] (audio): right-click a file → ranks the library by how it actually SOUNDS. Build it once with [b]Update fingerprints[/b] (top bar) — tiny, no extra deps. [i]Optional, much stronger:[/i] pip-install requirements-clap.txt (onnxruntime, no PyTorch), then [b]Download CLAP[/b] → [b]Build CLAP index[/b]; Find similar auto-uses it. Uses your GPU if onnxruntime-directml/-gpu is installed.
+[b]Three ways to find a sound[/b]
+• [b]Semantic[/b] (words → text): search line 1 — matches the meaning of the metadata.
+• [b]CLAP[/b] (words → sound): search line 2 — matches the actual audio. Needs CLAP built.
+• [b]Find similar[/b] (sound → sound): right-click a file → ranks the library by how it SOUNDS. Uses [b]Update fingerprints[/b] (tiny, no extra deps) or CLAP if built (much stronger, auto-preferred).
+[i]CLAP setup:[/i] pip-install requirements-clap.txt (onnxruntime, NO PyTorch), then [b]Download CLAP[/b] → [b]Build CLAP index[/b]. Uses your GPU if onnxruntime-directml/-gpu is installed.
 
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
@@ -529,6 +532,10 @@ var _sem_active: bool = false         # a semantic result set is the current bas
 var _sem_ranked: Array = []           # records in cosine-rank order (the base set)
 var _sem_scores: Dictionary = {}      # rel_path -> cosine score (for the Score column)
 var _sem_result_path: String = ""
+var _clap_edit: LineEdit              # the CLAP "search by sound" query box
+var _clap_search_thread: Thread = null
+var _clap_search_busy: bool = false
+var _clap_search_result_path: String = ""
 var _by_path: Dictionary = {}         # rel_path -> record, for fast rank lookup
 
 # embeddings.npz (beside the audio) + the "Update semantic index" job
@@ -667,6 +674,7 @@ func _ready() -> void:
 	_sg_renames_path = ProjectSettings.globalize_path("user://analyse_renames.json")
 	_pa_paths_file = ProjectSettings.globalize_path("user://analyse_paths.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
+	_clap_search_result_path = ProjectSettings.globalize_path("user://clap_search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
 	_fp_progress_path = ProjectSettings.globalize_path("user://fingerprint_progress.json")
@@ -831,7 +839,7 @@ func _build_ui() -> void:
 	_status_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.66))
 	barlib.add_child(_status_label)
 
-	# --- toolbar row: Update index (left) + SEMANTIC search box -----------
+	# --- toolbar row: SEMANTIC search (meaning of the text metadata) ------
 	var bar0 := HBoxContainer.new()
 	bar0.add_theme_constant_override("separation", 8)
 	root.add_child(bar0)
@@ -843,38 +851,51 @@ func _build_ui() -> void:
 	_emb_btn.pressed.connect(_update_embeddings)
 	bar0.add_child(_emb_btn)
 
-	_fp_btn = Button.new()
-	_fp_btn.text = "Update fingerprints"
-	_fp_btn.tooltip_text = "Build the acoustic fingerprint for any file that lacks one " \
-		+ "(reads its audio). Needed for right-click → Find similar (content-based search). " \
-		+ "Slow on a fresh library; incremental after."
-	_fp_btn.pressed.connect(_update_fingerprints)
-	bar0.add_child(_fp_btn)
-
-	_clap_dl_btn = Button.new()
-	_clap_dl_btn.text = "Download CLAP"
-	_clap_dl_btn.tooltip_text = "OPTIONAL: download the CLAP ONNX model (~120 MB audio " \
-		+ "+ ~500 MB text; NO PyTorch — pip install -r indexer/requirements-clap.txt for " \
-		+ "onnxruntime+transformers). A much stronger Find similar. Goes in <repo>/models " \
-		+ "(gitignored, not shipped)."
-	_clap_dl_btn.pressed.connect(_download_clap)
-	bar0.add_child(_clap_dl_btn)
-
-	_clapidx_btn = Button.new()
-	_clapidx_btn.text = "Build CLAP index"
-	_clapidx_btn.tooltip_text = "After Download CLAP: embed every file's audio with the " \
-		+ "ONNX model (~0.25 s/file on CPU) → clap.npz. Find similar then uses CLAP " \
-		+ "instead of the lightweight fingerprints."
-	_clapidx_btn.pressed.connect(_build_clap_index)
-	bar0.add_child(_clapidx_btn)
-
 	_sem_edit = LineEdit.new()
-	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
+	_sem_edit.placeholder_text = "Semantic (words): describe a sound — \"guns shooting\" — Enter. Matches the MEANING of the text."
 	_sem_edit.clear_button_enabled = true
 	_sem_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_sem_edit.text_submitted.connect(_on_semantic_submitted)
 	_sem_edit.text_changed.connect(_on_semantic_text_changed)   # emptying it unsearches
 	bar0.add_child(_sem_edit)
+
+	# --- toolbar row: CLAP search (by SOUND) + its build buttons ----------
+	var barclap := HBoxContainer.new()
+	barclap.add_theme_constant_override("separation", 8)
+	root.add_child(barclap)
+
+	_fp_btn = Button.new()
+	_fp_btn.text = "Update fingerprints"
+	_fp_btn.tooltip_text = "Build the tiny acoustic fingerprint for any file that lacks " \
+		+ "one (reads its audio). Powers right-click → Find similar when CLAP isn't built. " \
+		+ "Slow on a fresh library; incremental after."
+	_fp_btn.pressed.connect(_update_fingerprints)
+	barclap.add_child(_fp_btn)
+
+	_clap_dl_btn = Button.new()
+	_clap_dl_btn.text = "Download CLAP"
+	_clap_dl_btn.tooltip_text = "OPTIONAL: download the CLAP ONNX model (~120 MB audio " \
+		+ "+ ~500 MB text; NO PyTorch — pip install -r indexer/requirements-clap.txt for " \
+		+ "onnxruntime+transformers). Enables the sound-search box + a stronger Find " \
+		+ "similar. Goes in <repo>/models (gitignored, not shipped)."
+	_clap_dl_btn.pressed.connect(_download_clap)
+	barclap.add_child(_clap_dl_btn)
+
+	_clapidx_btn = Button.new()
+	_clapidx_btn.text = "Build CLAP index"
+	_clapidx_btn.tooltip_text = "After Download CLAP: embed every file's audio with the " \
+		+ "ONNX model (uses your GPU if available) → clap.npz. Needed for CLAP sound " \
+		+ "search + Find similar (auto-uses CLAP over the fingerprints)."
+	_clapidx_btn.pressed.connect(_build_clap_index)
+	barclap.add_child(_clapidx_btn)
+
+	_clap_edit = LineEdit.new()
+	_clap_edit.placeholder_text = "CLAP (by sound): describe it — \"creepy metallic scrape\" — Enter. Matches the actual SOUND. (needs Build CLAP index)"
+	_clap_edit.clear_button_enabled = true
+	_clap_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_clap_edit.text_submitted.connect(_on_clap_submitted)
+	_clap_edit.text_changed.connect(_on_clap_text_changed)
+	barclap.add_child(_clap_edit)
 
 	# --- toolbar row: Clear filters + count + text Filter box (one row) ----
 	var bar1 := HBoxContainer.new()
@@ -1789,7 +1810,77 @@ func _on_semantic_submitted(text: String) -> void:
 		_clear_semantic()
 		_apply()
 		return
+	if _clap_edit:
+		_clap_edit.text = ""                       # the two search boxes are exclusive
 	_run_semantic(q)
+
+
+# --- CLAP "search by sound": text -> audio ranking of the library ------------
+func _on_clap_submitted(text: String) -> void:
+	var q := text.strip_edges()
+	if q == "":
+		_clear_semantic()
+		_apply()
+		return
+	if _sem_edit:
+		_sem_edit.text = ""                        # exclusive with the semantic box
+	_run_clap_search(q)
+
+
+func _on_clap_text_changed(text: String) -> void:
+	if text.strip_edges() == "" and _sem_active:
+		_clear_semantic()
+		_apply()
+
+
+func _run_clap_search(query: String) -> void:
+	if _clap_search_busy:
+		return
+	if not FileAccess.file_exists(_library_root.path_join("clap.npz")):
+		_status_label.text = "CLAP sound search needs the index — click 'Build CLAP index' first."
+		return
+	if FileAccess.file_exists(_clap_search_result_path):
+		DirAccess.remove_absolute(_clap_search_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/clap_search.py").simplify_path()
+	_clap_search_busy = true
+	_status_label.text = "CLAP sound search: \"%s\" …" % query
+	_clap_search_thread = Thread.new()
+	_clap_search_thread.start(_clap_search_run.bind(script, query, _clap_search_result_path))
+
+
+func _clap_search_run(script: String, query: String, out: String) -> void:
+	var output: Array = []
+	var args := [script, query, out, "500"]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_clap_search_finished")
+
+
+func _clap_search_finished() -> void:
+	_clap_search_busy = false
+	if _clap_search_thread:
+		_clap_search_thread.wait_to_finish()
+		_clap_search_thread = null
+	if not FileAccess.file_exists(_clap_search_result_path):
+		_status_label.text = "CLAP search failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clap_search_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		var err := String(d.get("error", "?")) if typeof(d) == TYPE_DICTIONARY else "?"
+		if err == "no clap index":
+			_status_label.text = "CLAP sound search needs the index — click 'Build CLAP index' first."
+		elif err == "no text model":
+			_status_label.text = "CLAP text model missing — click 'Download CLAP'."
+		elif err == "deps":
+			_status_label.text = "CLAP needs onnxruntime + transformers — pip install -r indexer/requirements-clap.txt"
+		else:
+			_status_label.text = "CLAP search error: %s" % err
+		return
+	_apply_ranked_results(d.get("paths", []), d.get("scores", []))
+	_status_label.text = "CLAP sound-matches for \"%s\" — closest first (%d). Filter narrows." % [
+		String(d.get("query", "")), _filtered.size()]
 
 
 # Emptying the semantic box (backspace or the X button) "unsearches" — reverts to
@@ -4596,6 +4687,8 @@ func _exit_tree() -> void:
 		_clapidx_thread.wait_to_finish()
 	if _to16_thread and _to16_thread.is_started():
 		_to16_thread.wait_to_finish()
+	if _clap_search_thread and _clap_search_thread.is_started():
+		_clap_search_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
