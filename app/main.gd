@@ -437,6 +437,10 @@ var _suggest_loop_btn: Button
 var _sl_thread: Thread = null
 var _sl_busy: bool = false
 var _sl_result_path: String = ""
+var _ctx_menu: PopupMenu               # right-click row context menu
+var _ctx_rec: Variant = null           # the row it was opened on
+var _pending_ctx: String = ""          # action to run once analysis of _ctx_rec finishes
+var _ctx_after_suggest: bool = false   # bake the loop once Suggest loop lands (Make loop)
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -797,6 +801,19 @@ func _build_ui() -> void:
 		g.gui_input.connect(_on_grabber_input.bind(g))
 		add_child(g)
 		_grabbers.append(g)
+
+	# right-click row context menu
+	_ctx_menu = PopupMenu.new()
+	_ctx_menu.add_item("Open folder", 0)
+	_ctx_menu.add_item("Copy path", 1)
+	_ctx_menu.add_separator()
+	_ctx_menu.add_item("Suggest loop  (audition)", 2)
+	_ctx_menu.add_item("Suggest chops  (audition)", 3)
+	_ctx_menu.add_separator()
+	_ctx_menu.add_item("Make loop", 4)
+	_ctx_menu.add_item("Make chops", 5)
+	_ctx_menu.id_pressed.connect(_on_ctx_menu)
+	add_child(_ctx_menu)
 
 	_build_num_popup()
 
@@ -1861,6 +1878,16 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		elif mouse_btn == MOUSE_BUTTON_LEFT:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
+	if mouse_btn == MOUSE_BUTTON_RIGHT and typeof(rec) == TYPE_DICTIONARY:
+		# right-click any other cell: select this row + open the context menu
+		if not it.is_selected(0):
+			_tree.deselect_all()
+			it.select(0)
+		_refresh_star_buttons(rec)
+		_ctx_rec = rec
+		_ctx_menu.reset_size()
+		_ctx_menu.popup(Rect2i(DisplayServer.mouse_get_position(), Vector2i.ZERO))
+		return
 	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND \
 			or col == COL_LEVEL or col == COL_GAIN_DB:
 		return                                 # let the inline editor handle it
@@ -3266,6 +3293,56 @@ func _chop_finished() -> void:
 		recs.size(), tag_note]
 
 
+# ----- right-click context menu ---------------------------------------------
+func _on_ctx_menu(id: int) -> void:
+	if typeof(_ctx_rec) != TYPE_DICTIONARY:
+		return
+	match id:
+		0:                                          # open folder (uses selected row)
+			_on_reveal()
+		1:                                          # copy absolute path
+			DisplayServer.clipboard_set(_abs_path(_ctx_rec))
+			_now_label.text = "Copied path:  %s" % _abs_path(_ctx_rec)
+		2: _ctx_run("suggest_loop")
+		3: _ctx_run("suggest_chops")
+		4: _ctx_run("make_loop")
+		5: _ctx_run("make_chops")
+
+
+# Run a ctx action on _ctx_rec — analysing it first if it isn't the analysed file
+# yet (the action is queued and dispatched from _an_finished).
+func _ctx_run(action: String) -> void:
+	if typeof(_ctx_rec) != TYPE_DICTIONARY:
+		return
+	if String(_ctx_rec.get("ext", "")).to_lower() != "wav":
+		_an_status.text = "That action supports WAV files only."
+		return
+	if _ctx_rec == _an_rec and not _an_levels.is_empty() and not _an_busy:
+		_dispatch_ctx(action)                       # already analysed -> go now
+	else:
+		_pending_ctx = action                       # analyse first, then dispatch
+		_analyse_selected()                         # the ctx row is already selected
+
+
+func _dispatch_ctx(action: String) -> void:
+	match action:
+		"suggest_loop":
+			_suggest_loop()                         # sets region + xfade, loops, auditions
+		"suggest_chops":
+			_apply_suggested()                      # histogram threshold -> re-detect segments
+			_graph.sel_a = -1.0                     # detector segments (not a manual region)
+			_graph.sel_b = -1.0
+			_graph.queue_redraw()
+			if _xfade_chk: _xfade_chk.button_pressed = false
+			if _loop_chk: _loop_chk.button_pressed = true
+			_play_chops()                           # audition the chops, looping
+		"make_loop":
+			_ctx_after_suggest = true               # bake once Suggest loop lands
+			_suggest_loop()
+		"make_chops":
+			_chop_selected()
+
+
 # ----- suggest loop: loopfind.py picks a good loop region, then auto-preview ----
 func _suggest_loop() -> void:
 	if _sl_busy:
@@ -3322,6 +3399,12 @@ func _sl_finished() -> void:
 	if _loop_chk:
 		_loop_chk.button_pressed = true         # loop it so the seam is audible
 	var kind := ("rhythmic %.0f ms" % float(d.get("period_ms", 0.0))) if d.get("periodic", false) else "texture"
+	if _ctx_after_suggest:                      # right-click "Make loop": bake it now
+		_ctx_after_suggest = false
+		_an_status.text = "Suggested loop %.3f–%.3fs (%s) — baking…" % [
+			float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), kind]
+		_make_loop()
+		return
 	_an_status.text = "Suggested loop %.3f–%.3fs (%.0f ms xfade, %s) — auditioning; tweak then Make loop." % [
 		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), float(d.get("crossfade_ms", 0.0)), kind]
 	_play_chops()                               # audition the crossfaded loop now
@@ -3496,6 +3579,8 @@ func _exit_tree() -> void:
 
 func _an_finished() -> void:
 	_an_busy = false
+	var pend := _pending_ctx            # a right-click action waiting on analysis
+	_pending_ctx = ""                   # cleared up front: a failed analysis drops it
 	if _an_thread:
 		_an_thread.wait_to_finish()
 		_an_thread = null
@@ -3514,6 +3599,8 @@ func _an_finished() -> void:
 	_graph.sel_a = -1.0                 # drop any stale manual selection from the prior file
 	_graph.sel_b = -1.0
 	_apply_saved_or_suggested()        # also recomputes + redraws
+	if pend != "":
+		_dispatch_ctx(pend)
 
 
 # Drive the sliders from this file's saved chop params if it has any, else from

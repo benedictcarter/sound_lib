@@ -70,6 +70,16 @@ for non-obvious gotchas.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
   shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
   dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.
+- **Row right-click menu** (`_ctx_menu`, opened from `_on_tree_mouse_selected` on a
+  RIGHT-click of any non-Rating cell — Rating right-click still clears the rating):
+  Open folder (`_on_reveal`), Copy path (`DisplayServer.clipboard_set`), Suggest
+  loop / Suggest chops (audition), Make loop / Make chops. `_on_ctx_menu` -> `_ctx_run`
+  which, if the row isn't the analysed file yet, sets `_pending_ctx` and analyses it;
+  `_an_finished` then dispatches (`_dispatch_ctx`) — captured/cleared up front so a
+  failed analysis drops it. Suggest loop -> `_suggest_loop` (auto-previews looped);
+  Suggest chops -> `_apply_suggested` + `_play_chops` on Loop; Make loop chains
+  `_suggest_loop` -> `_ctx_after_suggest` -> `_make_loop` (bakes in `_sl_finished`);
+  Make chops -> `_chop_selected`.
 - **Keyword panel** computed in-app at load (`_build_keywords`): tokens from
   filename + library, de-duped per library; frequency = #libraries containing
   the token. Click appends the token to the search box (AND quick-filter).
