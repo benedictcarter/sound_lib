@@ -1,7 +1,7 @@
 # Sound Library
 
-A searchable, browsable catalog + audition tool for the **Sonniss GDC Game Audio
-Bundles** (~7,000 WAV files, ~217 GB across 8 yearly bundles).
+A searchable, browsable catalog + audition tool for the sound (developed using the **Sonniss GDC Game Audio
+Bundles** (~7,000 WAV files, ~217 GB across 8 yearly bundles)).
 
 The audio itself lives **outside** this repo in `S:\code\sound_lib_data` (path is
 configurable). The repo holds only the indexer and the Godot browser app.
