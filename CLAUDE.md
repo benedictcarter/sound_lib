@@ -124,10 +124,24 @@ for non-obvious gotchas.
   `_similar_finished`): standardises (z-score) the fingerprints, ranks by euclidean
   distance to the query, returns paths + a 0..1 similarity score. Results REUSE the
   semantic display pipeline via `_apply_ranked_results` (sets `_sem_ranked`/
-  `_sem_scores`, Score column, sort desc; text Filter still narrows). CLAP (audio+
-  text, ~1GB) was considered but rejected as too big for git — this is the tiny
-  local alternative. The **Semantic keyword panel** (`_skw_*`, left of Keywords)
-  clicks a token into a semantic (meaning) search; Keywords clicks into text filter.
+  `_sem_scores`, Score column, sort desc; text Filter still narrows). The **Semantic
+  keyword panel** (`_skw_*`, left of Keywords) clicks a token into a semantic
+  (meaning) search; Keywords clicks into text filter.
+- **CLAP (optional, much stronger similarity) — via ONNX, NO PyTorch**:
+  `indexer/clap_embed.py` runs the community ONNX export `Xenova/clap-htsat-unfused`
+  on **onnxruntime** (audio encoder ~118 MB, text ~502 MB), downloaded on demand into
+  `<repo>/models/clap` (gitignored). Mel features are built in numpy with
+  `transformers.audio_utils` matching `ClapFeatureExtractor`'s rand_trunc/repeatpad
+  EXACTLY (deterministic first-10s crop, slaney mel; `_extract_mel`); input
+  `input_features (1,1,1001,64)` -> `audio_embeds (512)`. `_session` prefers a GPU
+  build (CUDA/`DmlExecutionProvider`) then CPU — DirectML gives GPU accel on any DX12
+  card with zero CUDA setup (`onnxruntime-directml`). `similar.py` auto-prefers
+  `clap.npz` (cosine) over `fingerprints.npz`, so **Find similar upgrades to CLAP**
+  transparently once built. App: **Download CLAP** (`_clap_dl_*` -> `--download`) +
+  **Build CLAP index** (`_clapidx_*` -> `--only-missing`). Deps in
+  `requirements-clap.txt` (onnxruntime[+gpu/directml], transformers, huggingface_hub —
+  no torch). ~0.18 s/file on GPU (~22 min full lib; mel preprocessing is the floor).
+  Validated: minigun query -> machine-guns/miniguns/explosions (cos ~0.6).
 - **Semantic search** (meaning-based, NOT an LLM): `indexer/embed.py` embeds each
   file's text (filename+description+library+supplier) with a small local ONNX
   sentence model (fastembed, BAAI bge-small, 384-dim) -> `embeddings.npz` in the

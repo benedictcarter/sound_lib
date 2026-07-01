@@ -113,7 +113,7 @@ Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (
 
 [b]Two ways to search by sound[/b]
 • [b]Semantic[/b] (text): describe it in words — matches meaning of the metadata.
-• [b]Find similar[/b] (audio): right-click a file → ranks the library by how it actually SOUNDS (timbre/texture). Build it once with [b]Update fingerprints[/b] (top bar). [i]Optional:[/i] pip-install requirements-clap.txt, then [b]Download CLAP[/b] → [b]Build CLAP index[/b] for a stronger model (Find similar auto-uses it).
+• [b]Find similar[/b] (audio): right-click a file → ranks the library by how it actually SOUNDS. Build it once with [b]Update fingerprints[/b] (top bar) — tiny, no extra deps. [i]Optional, much stronger:[/i] pip-install requirements-clap.txt (onnxruntime, no PyTorch), then [b]Download CLAP[/b] → [b]Build CLAP index[/b]; Find similar auto-uses it. Uses your GPU if onnxruntime-directml/-gpu is installed.
 
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
@@ -853,17 +853,18 @@ func _build_ui() -> void:
 
 	_clap_dl_btn = Button.new()
 	_clap_dl_btn.text = "Download CLAP"
-	_clap_dl_btn.tooltip_text = "OPTIONAL: download the ~1 GB CLAP model (needs " \
-		+ "torch+transformers — pip install -r indexer/requirements-clap.txt). Gives a " \
-		+ "stronger Find similar. Model goes in <repo>/models (gitignored, not shipped)."
+	_clap_dl_btn.tooltip_text = "OPTIONAL: download the CLAP ONNX model (~120 MB audio " \
+		+ "+ ~500 MB text; NO PyTorch — pip install -r indexer/requirements-clap.txt for " \
+		+ "onnxruntime+transformers). A much stronger Find similar. Goes in <repo>/models " \
+		+ "(gitignored, not shipped)."
 	_clap_dl_btn.pressed.connect(_download_clap)
 	bar0.add_child(_clap_dl_btn)
 
 	_clapidx_btn = Button.new()
 	_clapidx_btn.text = "Build CLAP index"
-	_clapidx_btn.tooltip_text = "After downloading CLAP: embed every file's audio with " \
-		+ "it (slow on CPU) → clap.npz. Find similar then uses CLAP instead of the " \
-		+ "lightweight fingerprints."
+	_clapidx_btn.tooltip_text = "After Download CLAP: embed every file's audio with the " \
+		+ "ONNX model (~0.25 s/file on CPU) → clap.npz. Find similar then uses CLAP " \
+		+ "instead of the lightweight fingerprints."
 	_clapidx_btn.pressed.connect(_build_clap_index)
 	bar0.add_child(_clapidx_btn)
 

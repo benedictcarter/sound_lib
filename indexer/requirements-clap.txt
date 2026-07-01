@@ -1,10 +1,17 @@
-# OPTIONAL — only needed if you want CLAP (audio+text) content search, a stronger
-# "Find similar" plus true text->audio search. Heavy: pulls in PyTorch (~2 GB) and
-# downloads a ~1 GB model on first use (into <repo>/models, gitignored).
+# OPTIONAL — CLAP (audio+text) content search via ONNX. NO PyTorch. Downloads the
+# community ONNX export (Xenova/clap-htsat-unfused) on demand into <repo>/models
+# (gitignored): audio encoder ~118 MB, text encoder ~502 MB.
 #
 #   py -m pip install -r indexer/requirements-clap.txt
 #   then in the app: "Download CLAP" -> "Build CLAP index"
 #
-# Without this, the app uses the tiny built-in acoustic fingerprints (no torch).
-torch>=2.0
-transformers>=4.35
+# Without this, the app uses the tiny built-in acoustic fingerprints (no extra deps).
+onnxruntime>=1.16      # runs the ONNX CLAP encoders (CPU)
+transformers>=4.35     # tokenizer + audio_utils mel (numpy) — torch NOT required
+huggingface_hub>=0.19  # downloads the ONNX models + config
+#
+# GPU (optional, much faster indexing): install ONE of these INSTEAD of onnxruntime
+# above (they replace the CPU build):
+#   Windows, any GPU, zero setup:  pip uninstall onnxruntime && pip install onnxruntime-directml
+#   NVIDIA + CUDA installed:        pip uninstall onnxruntime && pip install onnxruntime-gpu
+# clap_embed.py auto-detects and uses CUDA/DirectML if present, else CPU.
