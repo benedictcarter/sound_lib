@@ -71,6 +71,52 @@ const STOPWORDS := {
 	"final": true, "take": true, "ver": true, "version": true,
 }
 const KW_MAX_SHOWN := 500   # cap rows in the panel for responsiveness
+
+const HELP_TEXT := "[b]Sound Library — what everything does[/b]
+
+[b]Library[/b]
+• [b]Choose library folder[/b] (top-left): pick the folder holding your sounds. It updates library.cfg, re-indexes that folder and reloads. The current path + index date show next to it.
+• [b]Analyse Audio[/b]: for every file not analysed yet, reads its audio once and fills the [i]orig dB[/i] / [i]final dB[/i] (loudness) and [i]Chop[/i] columns. New chops/loops you make are auto-analysed on their own.
+
+[b]Searching & filtering[/b]
+• [b]Semantic search[/b] (top box): describe a sound in plain words (e.g. \"guns shooting\", \"creepy monster growl\") and press Enter. Ranks by meaning, not word-match, using a small local model (no internet). The [i]Score[/i] column shows the match; clearing the box (or its ✕) unsearches.
+• [b]Filter[/b] box: quick text filter over filename / library / supplier / description / tags (space = AND). It narrows the semantic results too.
+• [b]Per-column filters[/b] (row above the table): text box, tick-boxes, or a min–max range depending on the column. [b]Clear filters[/b] resets everything (and the semantic box).
+• [b]Sort[/b]: click a column header (again to reverse).
+
+[b]Columns you can edit[/b] (lighter-tinted cells)
+• [b]Rating[/b]: click the stars (right-click clears), or use Rate on the Track row.
+• [b]Tags[/b]: your own keywords (space/comma separated); feed the search.
+• [b]Level[/b] (0–10 perceptual loudness dial): set it and [b]Gain dB[/b] auto-adjusts so equal Level = equally loud (capped so nothing clips). 10 ≈ loudest, halving = half as loud.
+• [b]Gain dB[/b]: per-track playback gain for balancing sounds. [i]orig dB[/i] = measured loudness (LUFS); [i]final dB[/i] = orig + Gain.
+• [b]Chop dB / gap / Min snd[/b]: the three detector knobs per file.
+[i]Spreadsheet editing:[/i] drag to select a range, Shift/Ctrl to extend, Ctrl+C / Ctrl+V, Del to clear, or just start typing to overwrite the selection.
+
+[b]Playing (Track row)[/b]
+• [b]Play Track[/b] / [b]Stop[/b], [b]Autoplay[/b] (play on select), [b]Loop[/b] (seamless), [b]Vol[/b]. [b]Space[/b] toggles play/pause anywhere (except while typing). MP3s play directly; other formats decode to WAV on demand.
+
+[b]Visualiser (bottom)[/b]
+Click a row to auto-analyse and see it. Kept sound = [b]green[/b], removed = grey, chop boundaries = blue, threshold = orange line. Height is perceptual (each 10 dB halves it).
+• [b]Left-drag[/b] = select a region. [b]Right-drag[/b] = set the height (threshold) and return to auto-detect. Seek on the thin strip below.
+
+[b]Loop row[/b]
+• [b]Suggest loop[/b]: auto-picks a good seamless-loop region (whole cycles for rhythmic sounds, steady sustain for textures) and auditions it.
+• [b]Crossfade[/b] + [b]Xfade ms[/b]: preview the region as a seamless crossfaded loop in memory (nothing written). [b]Play Loop[/b] auditions it.
+• [b]Make loop[/b]: bakes it to name_loop.wav next to the original (original kept).
+
+[b]Chops row[/b]
+• [b]Suggest Chops[/b]: sets the threshold from the file's loudness. Tune [b]Silence / Min gap / Min sound[/b].
+• [b]Play chops[/b]: auditions the pieces with gaps. [b]Make chops[/b]: writes each piece as name_chopped_NNN.wav (original kept).
+
+[b]Right-click a row[/b]
+Open folder · Copy path · Suggest loop / chops (audition) · Make loop / chops · Convert to WAV · Delete.
+
+[b]Delete[/b]
+Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
+
+[b]Side panels[/b]
+• [b]Semantic[/b]: click a keyword to search by meaning.
+• [b]Keywords[/b]: click a keyword to add it to the text filter. The count = number of libraries it appears in."
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
@@ -515,6 +561,10 @@ var _status_label: Label
 var _kw_list: ItemList
 var _kw_filter: LineEdit
 var _kw_header: Label
+var _skw_list: ItemList                 # "Semantic" keyword panel (click -> semantic search)
+var _skw_filter: LineEdit
+var _skw_header: Label
+var _help_dialog: AcceptDialog
 var _keywords: Array = []   # [ [token, library_count], ... ] sorted desc
 
 # player
@@ -701,13 +751,23 @@ func _build_ui() -> void:
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_theme_constant_override("separation", 6)
 	outer.add_child(root)
-	outer.add_child(_build_keyword_panel())        # right column, full height
+	var rightbox := HBoxContainer.new()            # right column: Semantic + Keywords
+	rightbox.add_theme_constant_override("separation", 6)
+	rightbox.add_child(_build_semantic_keyword_panel())
+	rightbox.add_child(_build_keyword_panel())
+	outer.add_child(rightbox)
 	outer.set_deferred("split_offset", 5000)       # left takes the slack
 
 	# --- toolbar row: library folder (top-left) + path ------------------
 	var barlib := HBoxContainer.new()
 	barlib.add_theme_constant_override("separation", 8)
 	root.add_child(barlib)
+
+	var helpbtn := Button.new()
+	helpbtn.text = "Help"
+	helpbtn.tooltip_text = "What every part of the app does."
+	helpbtn.pressed.connect(_show_help)
+	barlib.add_child(helpbtn)
 
 	var libbtn := Button.new()
 	libbtn.text = "Choose library folder"
@@ -1191,9 +1251,85 @@ func _passes_col_filters(rec: Dictionary) -> bool:
 	return true
 
 
+# The "Semantic" keyword panel: same style as Keywords, but clicking a token runs
+# a MEANING-based search (into the semantic box) instead of a text quick-filter.
+func _build_semantic_keyword_panel() -> Control:
+	var panel := VBoxContainer.new()
+	panel.custom_minimum_size = Vector2(210, 0)
+	panel.add_theme_constant_override("separation", 4)
+
+	_skw_header = Label.new()
+	_skw_header.text = "Semantic"
+	panel.add_child(_skw_header)
+
+	var hint := Label.new()
+	hint.text = "click to search by meaning"
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	panel.add_child(hint)
+
+	_skw_filter = LineEdit.new()
+	_skw_filter.placeholder_text = "find keyword..."
+	_skw_filter.clear_button_enabled = true
+	_skw_filter.text_changed.connect(func(_t): _populate_semantic_keyword_list())
+	panel.add_child(_skw_filter)
+
+	_skw_list = ItemList.new()
+	_skw_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_skw_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_skw_list.item_clicked.connect(_on_semantic_keyword_clicked)
+	panel.add_child(_skw_list)
+	return panel
+
+
+func _populate_semantic_keyword_list() -> void:
+	if _skw_list == null:
+		return
+	var filt := _skw_filter.text.strip_edges().to_lower()
+	_skw_list.clear()
+	var shown := 0
+	for pair in _keywords:
+		var token: String = pair[0]
+		if filt != "" and not token.contains(filt):
+			continue
+		var idx := _skw_list.add_item("%s  (%d)" % [token, pair[1]])
+		_skw_list.set_item_metadata(idx, token)
+		shown += 1
+		if shown >= KW_MAX_SHOWN:
+			break
+	_skw_header.text = "Semantic (%d)" % _keywords.size()
+
+
+func _on_semantic_keyword_clicked(index: int, _at: Vector2, _mouse_btn: int) -> void:
+	var token := String(_skw_list.get_item_metadata(index))
+	_sem_edit.text = token                          # show it in the semantic box
+	_run_semantic(token)                            # meaning-based search
+
+
+func _show_help() -> void:
+	if _help_dialog == null:
+		_help_dialog = AcceptDialog.new()
+		_help_dialog.title = "Sound Library — Help"
+		_help_dialog.min_size = Vector2i(780, 700)
+		var scroll := ScrollContainer.new()
+		scroll.custom_minimum_size = Vector2(740, 620)
+		scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		var rt := RichTextLabel.new()
+		rt.bbcode_enabled = true
+		rt.fit_content = true
+		rt.custom_minimum_size = Vector2(716, 0)
+		rt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		rt.add_theme_constant_override("line_separation", 3)
+		rt.text = HELP_TEXT
+		scroll.add_child(rt)
+		_help_dialog.add_child(scroll)
+		add_child(_help_dialog)
+	_help_dialog.popup_centered()
+
+
 func _build_keyword_panel() -> Control:
 	var panel := VBoxContainer.new()
-	panel.custom_minimum_size = Vector2(250, 0)
+	panel.custom_minimum_size = Vector2(210, 0)
 	panel.add_theme_constant_override("separation", 4)
 
 	_kw_header = Label.new()
@@ -1533,6 +1669,7 @@ func _build_keywords() -> void:
 		return a[0].naturalnocasecmp_to(b[0]) < 0
 	)
 	_populate_keyword_list()
+	_populate_semantic_keyword_list()
 
 
 func _populate_keyword_list() -> void:
