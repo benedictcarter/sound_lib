@@ -50,6 +50,8 @@ const SEL_EDIT_COLS := [COL_TAGS, COL_LEVEL, COL_GAIN_DB]
 const EDITABLE_COLS := [COL_RATING, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND,
 	COL_TAGS, COL_LEVEL, COL_GAIN_DB]
 const EDIT_CELL_BG := Color(1, 1, 1, 0.08)   # subtle lighter overlay on editable cells
+const ZEBRA_BG := Color(1, 1, 1, 0.035)      # odd-row stripe (easier to track a row)
+const EDIT_CELL_BG_ODD := Color(1, 1, 1, 0.115)  # editable cell on an odd (striped) row
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -728,6 +730,7 @@ func _build_ui() -> void:
 	_sem_edit.clear_button_enabled = true
 	_sem_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_sem_edit.text_submitted.connect(_on_semantic_submitted)
+	_sem_edit.text_changed.connect(_on_semantic_text_changed)   # emptying it unsearches
 	bar0.add_child(_sem_edit)
 
 	# --- toolbar row: Clear filters + count + text Filter box (one row) ----
@@ -1516,20 +1519,35 @@ func _on_search_changed(_t: String) -> void:
 
 func _on_semantic_submitted(text: String) -> void:
 	var q := text.strip_edges()
-	if q == "":                                    # cleared -> drop semantic base
-		_sem_active = false
-		_sem_ranked = []
-		_sem_scores = {}
-		if _sort_col == COL_SCORE:                 # leave Score-sort behind
-			_sort_col = COL_FILENAME
-			_sort_asc = true
+	if q == "":                                    # Enter on an empty box -> unsearch
+		_clear_semantic()
 		_apply()
 		return
 	_run_semantic(q)
 
 
+# Emptying the semantic box (backspace or the X button) "unsearches" — reverts to
+# the full base set. text_changed fires per keystroke; only act when it goes empty.
+func _on_semantic_text_changed(text: String) -> void:
+	if text.strip_edges() == "" and _sem_active:
+		_clear_semantic()
+		_apply()
+
+
+# Drop the semantic result set as the base (used by clear box + Clear filters).
+func _clear_semantic() -> void:
+	_sem_active = false
+	_sem_ranked = []
+	_sem_scores = {}
+	if _sort_col == COL_SCORE:                      # leave Score-sort behind
+		_sort_col = COL_FILENAME
+		_sort_asc = true
+
+
 func _on_clear() -> void:
 	_search.text = ""
+	_sem_edit.text = ""                            # Clear filters also clears semantic
+	_clear_semantic()
 	_filter_text = {}
 	_filter_set = {}
 	_filter_min = {}
@@ -1760,7 +1778,9 @@ func _populate_tree() -> void:
 	_hover_star = -1
 	_tree.clear()
 	var root := _tree.create_item()
-	for rec in _filtered:
+	for i in _filtered.size():
+		var rec: Dictionary = _filtered[i]
+		var odd := (i & 1) == 1                     # zebra: shade every other row
 		var it := _tree.create_item(root)
 		it.set_text(COL_FILENAME, String(rec.get("filename", "")))
 		it.set_text(COL_LIBRARY, String(rec.get("library", "")))
@@ -1780,8 +1800,12 @@ func _populate_tree() -> void:
 				COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 				COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
-		for c in EDITABLE_COLS:                 # tint editable cells a touch lighter
-			it.set_custom_bg_color(c, EDIT_CELL_BG)
+		# zebra stripe + editable-cell tint, in one pass over the columns
+		for c in range(COL_COUNT):
+			if EDITABLE_COLS.has(c):
+				it.set_custom_bg_color(c, EDIT_CELL_BG_ODD if odd else EDIT_CELL_BG)
+			elif odd:
+				it.set_custom_bg_color(c, ZEBRA_BG)
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
 
