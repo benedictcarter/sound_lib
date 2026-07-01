@@ -2647,6 +2647,11 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 						_apply_drag_range(it, it)
 						_tree.accept_event()
 		else:                                  # released
+			# If a real drag happened (moved to another row), accept the release so the
+			# Tree doesn't collapse the range OR open the inline editor on the final
+			# cell. A plain click (no move) falls through and still plays.
+			if _drag_sel and _drag_anchor != null and _drag_last != null and _drag_last != _drag_anchor:
+				_tree.accept_event()
 			_drag_sel = false
 			_drag_additive = false
 			_drag_toggle = false
