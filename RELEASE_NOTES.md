@@ -6,8 +6,16 @@ libraries — built for the [Sonniss GDC Game Audio Bundles](https://sonniss.com
 
 Browse thousands of files instantly, **find sounds three different ways** (by name, by
 meaning, or by how they *actually sound*), level-balance them, chop long recordings into
-individual hits, and bake seamless loops — all in one keyboard-friendly tool. **Godot 4.6**
-front-end, **Python** for the heavy lifting. No cloud, no subscription, no LLM.
+individual hits, and bake seamless loops — all in one keyboard-friendly tool. No cloud,
+no subscription, no LLM.
+
+## ⬇️ Download — Windows, no install, no Python
+Grab **`SoundLibrary_v1.0_win64.zip`** below, unzip, and double-click `app\SoundLibrary.exe`.
+Then click **Choose library folder**, pick your sounds, and go. Everything's bundled — no
+Python or setup required.
+> First launch may show a Windows SmartScreen prompt (the app is unsigned): **More info → Run anyway**.
+> Semantic search and Find-similar are included; the optional CLAP "search by sound" upgrade
+> still needs the separate setup in the project README.
 
 ---
 
