@@ -26,12 +26,14 @@ libraries — Godot↔Python disagree on control-char escaping. Cost: a confusin
 ## `allow_rmb_select = true` COLLAPSES a multi-selection on right-click
 Enabling `allow_rmb_select` (needed so right-click fires `item_mouse_selected`)
 also makes the Tree SELECT the clicked row on right-press — which, in `SELECT_MULTI`,
-collapses your whole multi-selection to just that one row BEFORE `item_mouse_selected`
-runs. So a "convert/delete the selection" context action only saw the single
-right-clicked file. **Fix:** snapshot the selection in the `gui_input` handler (it
-runs BEFORE the Tree's own handler, i.e. before the collapse), and if the clicked
-row was part of the selection, restore the snapshot in `item_mouse_selected` before
-opening the menu. Keep enabled but "repair" the selection each right-press.
+collapses your whole multi-selection to just that one row. So a "convert/delete the
+selection" context action only saw the single right-clicked file. A snapshot-then-
+restore-in-`item_mouse_selected` fix did NOT work — the Tree re-settles the selection
+after emitting the signal, undoing the restore. **What works:** handle the right-
+click entirely in the `gui_input` signal (which runs BEFORE the Tree's own handler),
+open the menu there, and `accept_event()` so the Tree never processes the rmb-select
+at all — the selection is never collapsed. Let only the column you still want the
+Tree to handle (here, Rating's right-click-clear) fall through without accepting.
 
 ## Godot Tree right-click is dead unless `allow_rmb_select = true`
 `Tree.item_mouse_selected(pos, button_index)` — the signal you hook for a row

@@ -491,8 +491,6 @@ var _sl_busy: bool = false
 var _sl_result_path: String = ""
 var _ctx_menu: PopupMenu               # right-click row context menu
 var _ctx_rec: Variant = null           # the row it was opened on
-var _rmb_snapshot: Array = []          # selection captured on right-press (before rmb collapse)
-var _rmb_keep: bool = false            # clicked row was part of the multi-selection
 var _pending_ctx: String = ""          # action to run once analysis of _ctx_rec finishes
 var _ctx_after_suggest: bool = false   # bake the loop once Suggest loop lands (Make loop)
 var _convert_thread: Thread = null     # non-WAV (mp3/…) -> sibling WAV decode
@@ -2190,16 +2188,28 @@ func _to16_finished() -> void:
 		_status_label.text = "Convert to 16-bit error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
 		return
 	var recs: Array = d.get("records", [])
-	for rec in recs:                               # each copy inherits its source's tags
+	for rec in recs:                               # each copy inherits its source's data
 		var cp := String(rec.get("path", ""))
 		var src_rel := cp.substr(0, cp.length() - String("_16bit.wav").length()) + ".wav"
-		var stags := _get_tags(_by_path.get(src_rel, {}))
-		if stags.strip_edges() != "":
-			_inherit_tags_to([rec], stags)
+		_inherit_userdata(src_rel, cp)             # tags + target Level + Gain dB + rating
+	_save_userdata()
 	_merge_new_records(recs)
-	_analyse_paths(_paths_of(recs))                # auto-fill dB for the new copies
+	_analyse_paths(_paths_of(recs))                # measure dB; Level then re-drives Gain
 	_status_label.text = "16-bit: %d converted, %d skipped." % [
 		int(d.get("converted", 0)), int(d.get("skipped", 0))]
+
+
+# Copy a source row's user data (tags, target Level, Gain dB, rating, …) onto a new
+# row (e.g. a 16-bit copy) so it behaves the same for balancing. Not saved here.
+func _inherit_userdata(src_rel: String, dst_rel: String) -> void:
+	var su: Dictionary = _userdata.get(src_rel, {})
+	if su.is_empty():
+		return
+	var du: Dictionary = _userdata.get(dst_rel, {})
+	for k in ["tags", "level", "gain_db", "rating", "target_db", "vol_mult"]:
+		if su.has(k):
+			du[k] = su[k]
+	_userdata[dst_rel] = du
 
 
 # ----- "Find similar": rank the library by how close a file SOUNDS to _ctx_rec ---
@@ -2458,19 +2468,8 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 		elif mouse_btn == MOUSE_BUTTON_LEFT:
 			_apply_rating(rec, it, _star_at(it, pos.x))
 		return                                 # never play when rating
-	if mouse_btn == MOUSE_BUTTON_RIGHT and typeof(rec) == TYPE_DICTIONARY:
-		# Keep the whole multi-selection when you right-click a row that was part of
-		# it (the tree just collapsed it); otherwise select just the clicked row.
-		if _rmb_keep and _rmb_snapshot.size() > 1:
-			_restore_selection(_rmb_snapshot)
-		elif not it.is_selected(0):
-			_tree.deselect_all()
-			it.select(0)
-		_refresh_star_buttons(rec)
-		_ctx_rec = rec
-		_ctx_menu.reset_size()
-		_ctx_menu.popup(Rect2i(DisplayServer.mouse_get_position(), Vector2i.ZERO))
-		return
+	# (right-click context menu is opened from _on_tree_gui_input so it doesn't
+	#  collapse a multi-selection; only the Rating column falls through to here.)
 	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND \
 			or col == COL_LEVEL or col == COL_GAIN_DB:
 		return                                 # let the inline editor handle it
@@ -2605,13 +2604,24 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 	# proceeds normally to start a fresh selection).
 	if event is InputEventMouseButton and event.pressed and _cell_edit_active:
 		_commit_cell_edit()
-	# Right-press: snapshot the selection BEFORE the tree's rmb-select collapses it,
-	# so a right-click on an already-selected row keeps the whole multi-selection for
-	# the context-menu action. (gui_input runs before the Tree's own handler.)
+	# Right-click: open the context menu WITHOUT collapsing a multi-selection. We
+	# handle it HERE (gui_input runs before the Tree's own rmb-select) and accept the
+	# event so the Tree never touches the selection. The Rating column is left to the
+	# Tree so its right-click-clear (via item_mouse_selected) still fires.
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		_rmb_snapshot = _selected_paths()
 		var hit := _tree.get_item_at_position(event.position)
-		_rmb_keep = hit != null and typeof(hit.get_metadata(0)) == TYPE_DICTIONARY and hit.is_selected(0)
+		if hit != null and typeof(hit.get_metadata(0)) == TYPE_DICTIONARY \
+				and _tree.get_column_at_position(event.position) != COL_RATING:
+			var rec: Dictionary = hit.get_metadata(0)
+			if not _selected_paths().has(String(rec.get("path", ""))):
+				_tree.deselect_all()               # clicked an unselected row -> pick just it
+				hit.select(0)
+			_ctx_rec = rec
+			_refresh_star_buttons(rec)
+			_ctx_menu.reset_size()
+			_ctx_menu.popup(Rect2i(DisplayServer.mouse_get_position(), Vector2i.ZERO))
+			_tree.accept_event()                   # keep the selection intact
+			return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			var c := _divider_at(event.position)
@@ -4291,21 +4301,6 @@ func _selected_paths() -> Array:
 			out.append(String(r.get("path", "")))
 		it = _tree.get_next_selected(it)
 	return out
-
-
-# Re-select the rows whose paths are in `paths` (restores a snapshot).
-func _restore_selection(paths: Array) -> void:
-	var want := {}
-	for p in paths:
-		want[String(p)] = true
-	_tree.deselect_all()
-	var root := _tree.get_root()
-	var it := root.get_first_child() if root else null
-	while it != null:
-		var r: Variant = it.get_metadata(0)
-		if typeof(r) == TYPE_DICTIONARY and want.has(String(r.get("path", ""))):
-			it.select(0)
-		it = it.get_next()
 
 
 # Find the row with this rel path, select it and scroll it into view.
