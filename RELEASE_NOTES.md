@@ -14,8 +14,8 @@ Grab **`SoundLibrary_v1.0_win64.zip`** below, unzip, and double-click `app\Sound
 Then click **Choose library folder**, pick your sounds, and go. Everything's bundled — no
 Python or setup required.
 > First launch may show a Windows SmartScreen prompt (the app is unsigned): **More info → Run anyway**.
-> Semantic search and Find-similar are included; the optional CLAP "search by sound" upgrade
-> still needs the separate setup in the project README.
+> **Everything's included** — text, semantic, Find-similar, chop, loop, *and* **CLAP search-by-sound**
+> (for CLAP just click **Download CLAP** once to fetch the model, then **Build CLAP index**).
 
 ---
 
