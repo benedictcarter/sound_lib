@@ -35,15 +35,13 @@ def main() -> None:
         sys.exit("clap.npz missing — Build CLAP index first")
 
     try:
-        from transformers import AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(str(C.MODEL_DIR))
-        qv = C.embed_text(C._session(C.TEXT_ONNX), tok, query)   # unit-normalised 512-d
+        qv = C.embed_text(C._session(C.TEXT_ONNX), query)   # unit-normalised 512-d
     except FileNotFoundError:
         Path(out).write_text(json.dumps({"ok": False, "error": "no text model"}), encoding="utf-8")
         sys.exit("CLAP text model missing — Download CLAP")
     except ImportError:
         Path(out).write_text(json.dumps({"ok": False, "error": "deps"}), encoding="utf-8")
-        sys.exit("CLAP needs onnxruntime + transformers (requirements-clap.txt)")
+        sys.exit("CLAP needs onnxruntime + tokenizers (requirements-clap.txt)")
 
     data = np.load(clap, allow_pickle=True)
     vecs = data["vectors"].astype(np.float32)

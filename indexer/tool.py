@@ -36,7 +36,8 @@ import to_wav         # noqa: F401
 import to_16bit       # noqa: F401
 import gaps           # noqa: F401
 import loud           # noqa: F401
-try:                  # CLAP is optional (heavy deps); still bundled when present
+try:                  # CLAP (onnxruntime + tokenizers, no torch) — bundled too
+    import _clap_dsp   # noqa: F401
     import clap_embed  # noqa: F401
     import clap_search  # noqa: F401
 except Exception:

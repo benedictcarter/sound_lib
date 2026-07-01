@@ -1,14 +1,14 @@
-# OPTIONAL — CLAP (audio+text) content search via ONNX. NO PyTorch. Downloads the
-# community ONNX export (Xenova/clap-htsat-unfused) on demand into <repo>/models
-# (gitignored): audio encoder ~118 MB, text encoder ~502 MB.
+# OPTIONAL — CLAP (audio+text) content search via ONNX. NO PyTorch, NO transformers.
+# Downloads the community ONNX export (Xenova/clap-htsat-unfused) on demand into
+# <repo>/models (gitignored): audio encoder ~118 MB, text encoder ~502 MB.
 #
 #   py -m pip install -r indexer/requirements-clap.txt
 #   then in the app: "Download CLAP" -> "Build CLAP index"
 #
-# Without this, the app uses the tiny built-in acoustic fingerprints (no extra deps).
+# These are also what the standalone build bundles, so CLAP works with no install.
 onnxruntime>=1.16      # runs the ONNX CLAP encoders (CPU)
-transformers>=4.35     # tokenizer + audio_utils mel (numpy) — torch NOT required
-huggingface_hub>=0.19  # downloads the ONNX models + config
+tokenizers>=0.15       # text tokeniser (Rust) — no torch/transformers
+huggingface_hub>=0.19  # downloads the ONNX models + tokenizer.json
 #
 # GPU (optional, much faster indexing): install ONE of these INSTEAD of onnxruntime
 # above (they replace the CPU build):

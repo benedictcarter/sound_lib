@@ -22,12 +22,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from math import gcd
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # so `import _clap_dsp` works
 
 _REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
 REPO = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
@@ -95,7 +98,7 @@ def _cfg() -> dict:
 def _filters():
     global _mel_fb
     if _mel_fb is None:
-        from transformers.audio_utils import mel_filter_bank
+        from _clap_dsp import mel_filter_bank
         p = _cfg()
         _mel_fb = mel_filter_bank(
             num_frequency_bins=(p["n_fft"] >> 1) + 1, num_mel_filters=p["feature_size"],
@@ -113,7 +116,7 @@ def _extract_mel(path: str) -> np.ndarray:
     global _win
     import soundfile as sf
     from scipy.signal import resample_poly
-    from transformers.audio_utils import window_function, power_to_db
+    from _clap_dsp import window_function, power_to_db
     p = _cfg()
     sr_t, nmax, nfft, hop = p["sampling_rate"], p["nb_max_samples"], p["n_fft"], p["hop_length"]
     # only the first ~10 s is used; read just that from the source (cheap read/resample)
@@ -164,12 +167,25 @@ def embed_audio(session, path: str) -> np.ndarray:
     return _norm(out[0])
 
 
-def embed_text(session, tok, text: str) -> np.ndarray:
-    enc = tok([text], return_tensors="np", padding=True)
+_tok = None
+
+
+def _tokenizer():
+    global _tok
+    if _tok is None:
+        from tokenizers import Tokenizer      # lightweight (Rust), no torch/transformers
+        _tok = Tokenizer.from_file(str(MODEL_DIR / "tokenizer.json"))
+    return _tok
+
+
+def embed_text(session, text: str) -> np.ndarray:
+    enc = _tokenizer().encode(text)
+    feats = {"input_ids": np.array([enc.ids], dtype=np.int64),
+             "attention_mask": np.array([enc.attention_mask], dtype=np.int64)}
     feed = {}
     for i in session.get_inputs():
-        if i.name in enc:
-            feed[i.name] = np.asarray(enc[i.name]).astype(_ORT_DTYPE.get(i.type, np.int64))
+        if i.name in feats:
+            feed[i.name] = feats[i.name].astype(_ORT_DTYPE.get(i.type, np.int64))
     return _norm(session.run(None, feed)[0])
 
 
@@ -209,13 +225,7 @@ def main() -> None:
         return
 
     if args.text is not None:                    # text -> audio query vector
-        try:
-            from transformers import AutoTokenizer
-        except ImportError:
-            _err(args.result, "CLAP (ONNX) needs transformers — pip install -r indexer/requirements-clap.txt")
-            raise SystemExit("missing deps")
-        tok = AutoTokenizer.from_pretrained(str(MODEL_DIR))
-        np.save(args.out, embed_text(_session(TEXT_ONNX), tok, args.text))
+        np.save(args.out, embed_text(_session(TEXT_ONNX), args.text))
         print("ok: text embedded")
         return
 
