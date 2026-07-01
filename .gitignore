@@ -27,6 +27,9 @@
 /app/.godot/
 /app/android/
 /app/export_presets.cfg
+/app/SoundLibrary.exe
+/app/*.exe
+/app/*.pck
 *.translation
 
 # --- Python ---

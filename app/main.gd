@@ -1657,7 +1657,10 @@ func _add_slider(bar: HBoxContainer, name: String, lo: float, hi: float,
 #  Data load
 # ===========================================================================
 func _load_index() -> void:
-	var path := "res://index.json"
+	# Read the LIVE index.json from disk (globalize), not res:// — in an exported
+	# build res:// points into the read-only packed archive, but the indexer writes
+	# the real file to disk next to the app. Same path in the editor.
+	var path := ProjectSettings.globalize_path("res://index.json")
 	if not FileAccess.file_exists(path):
 		_status_label.text = "index.json not found. Run:  py indexer/index.py"
 		_now_label.text = "No index. Generate it with the Python indexer, then restart."
@@ -3061,7 +3064,7 @@ func _reindex_finished() -> void:
 	if _reindex_thread:
 		_reindex_thread.wait_to_finish()
 		_reindex_thread = null
-	if not FileAccess.file_exists("res://index.json"):
+	if not FileAccess.file_exists(ProjectSettings.globalize_path("res://index.json")):
 		_status_label.text = "Indexing failed (no index.json). Is python on PATH?"
 		return
 	_load_userdata()                           # sidecars for the (possibly new) library
