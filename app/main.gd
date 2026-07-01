@@ -1209,10 +1209,11 @@ func _build_transport_row(root: VBoxContainer) -> void:
 	var bar := HBoxContainer.new()
 	bar.add_theme_constant_override("separation", 8)
 	root.add_child(bar)
+	bar.add_child(_group_label("Track"))
 
 	_play_btn = Button.new()
-	_play_btn.text = "Play"
-	_play_btn.custom_minimum_size = Vector2(70, 0)
+	_play_btn.text = "Play Track"
+	_play_btn.custom_minimum_size = Vector2(100, 0)
 	_play_btn.pressed.connect(_on_play_pressed)
 	bar.add_child(_play_btn)
 
@@ -1284,8 +1285,17 @@ func _build_analyser(root: VBoxContainer) -> void:
 	root.add_child(loopbar)
 	loopbar.add_child(_group_label("Loop"))
 
+	var playloop := Button.new()
+	playloop.text = "Play Loop"
+	playloop.custom_minimum_size = Vector2(100, 0)
+	playloop.tooltip_text = "Audition the selected region as a seamless crossfaded " \
+		+ "loop (turns Crossfade + Loop on). Suggest loop or drag a region first."
+	playloop.pressed.connect(_on_play_loop)
+	loopbar.add_child(playloop)
+
 	_suggest_loop_btn = Button.new()
 	_suggest_loop_btn.text = "Suggest loop"
+	_suggest_loop_btn.custom_minimum_size = Vector2(110, 0)
 	_suggest_loop_btn.tooltip_text = "Analyse the file and pick a good seamless-loop " \
 		+ "region: a whole number of cycles for rhythmic sounds (gunfire, engines), or " \
 		+ "the steady sustain for textures (flame, rain). Sets the region + crossfade " \
@@ -1295,6 +1305,7 @@ func _build_analyser(root: VBoxContainer) -> void:
 
 	_loop_btn = Button.new()
 	_loop_btn.text = "Make loop"
+	_loop_btn.custom_minimum_size = Vector2(100, 0)
 	_loop_btn.tooltip_text = "Bake a SEAMLESS loop of the selected region (green) as " \
 		+ "name_loop.wav next to the original — equal-power crossfade so it wraps " \
 		+ "with no click/seam. Original kept. Set the crossfade (ms) at right."
@@ -1326,11 +1337,28 @@ func _build_analyser(root: VBoxContainer) -> void:
 	root.add_child(chopbar)
 	chopbar.add_child(_group_label("Chops"))
 
+	var playchops := Button.new()
+	playchops.text = "Play chops"
+	playchops.custom_minimum_size = Vector2(100, 0)
+	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
+		+ "between them, so the boundaries are audibly obvious."
+	playchops.pressed.connect(_play_chops)
+	chopbar.add_child(playchops)
+
 	var sug := Button.new()
-	sug.text = "Suggest"
+	sug.text = "Suggest Chops"
+	sug.custom_minimum_size = Vector2(110, 0)
 	sug.tooltip_text = "Set the silence threshold from this file's loudness histogram"
 	sug.pressed.connect(_apply_suggested)
 	chopbar.add_child(sug)
+
+	_chop_btn = Button.new()
+	_chop_btn.text = "Chop to files"
+	_chop_btn.custom_minimum_size = Vector2(100, 0)
+	_chop_btn.tooltip_text = "Write each piece as name_chopped_NNN.wav next to the " \
+		+ "original (the original is KEPT). Re-run the indexer to see them."
+	_chop_btn.pressed.connect(_chop_selected)
+	chopbar.add_child(_chop_btn)
 
 	_sil_slider = _add_slider(chopbar, "Silence", -90, 0, 1, DEF_SILENCE_DB)
 	_sil_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
@@ -1338,20 +1366,6 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_gap_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
 	_snd_slider = _add_slider(chopbar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
 	_snd_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
-
-	var playchops := Button.new()
-	playchops.text = "Play chops"
-	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
-		+ "between them, so the boundaries are audibly obvious."
-	playchops.pressed.connect(_play_chops)
-	chopbar.add_child(playchops)
-
-	_chop_btn = Button.new()
-	_chop_btn.text = "Chop to files"
-	_chop_btn.tooltip_text = "Write each piece as name_chopped_NNN.wav next to the " \
-		+ "original (the original is KEPT). Re-run the indexer to see them."
-	_chop_btn.pressed.connect(_chop_selected)
-	chopbar.add_child(_chop_btn)
 
 	_sg_btn = Button.new()
 	_sg_btn.text = "Analyse audio (chops + loudness)"
@@ -2285,7 +2299,7 @@ func _on_play_pressed() -> void:
 		return
 	if _player.playing:
 		_player.stream_paused = true
-		_play_btn.text = "Play"
+		_play_btn.text = "Play Track"
 	elif _player.stream_paused:
 		_player.stream_paused = false
 		_play_btn.text = "Pause"
@@ -2297,7 +2311,7 @@ func _on_play_pressed() -> void:
 func _on_stop_pressed() -> void:
 	_player.stop()
 	_playing_chops = false                     # stop ends the region/chops audition
-	_play_btn.text = "Play"
+	_play_btn.text = "Play Track"
 	_time_label.text = "0:00 / 0:00"
 
 
@@ -2413,13 +2427,13 @@ func _process(_delta: float) -> void:
 		var pos := _player.get_playback_position()
 		_time_label.text = "%s / %s" % [_fmt_time(pos), _fmt_time(_stream_len)]
 	if not _player.playing and not _player.stream_paused and _play_btn.text == "Pause":
-		_play_btn.text = "Play"  # finished
+		_play_btn.text = "Play Track"  # finished
 
 
 func _on_playback_finished() -> void:
 	# Fired only when the stream plays through to the end (not on Stop) -- i.e.
 	# the user finished listening. Count it.
-	_play_btn.text = "Play"
+	_play_btn.text = "Play Track"
 	if _playing_rec == null:
 		return
 	var key := String(_playing_rec.get("path", ""))
@@ -3135,6 +3149,15 @@ func _reload_loudness_cells() -> void:
 
 
 # ----- play chops: each piece + 1 s of silence, as a single preview stream ---
+# "Play Loop": audition the selected region as a seamless crossfaded loop.
+func _on_play_loop() -> void:
+	if _xfade_chk:
+		_xfade_chk.button_pressed = true       # crossfade preview
+	if _loop_chk:
+		_loop_chk.button_pressed = true         # loop so the seam is audible
+	_play_chops()
+
+
 func _play_chops() -> void:
 	if typeof(_an_rec) != TYPE_DICTIONARY or _effective_segments().is_empty():
 		_an_status.text = "Analyse a file (or drag a region) first — no chops to play."
