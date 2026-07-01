@@ -771,6 +771,7 @@ func _build_ui() -> void:
 	# Ctrl+C / Ctrl+V like a spreadsheet. Row actions still use get_selected().
 	_tree.select_mode = Tree.SELECT_MULTI
 	_tree.allow_reselect = true
+	_tree.allow_rmb_select = true          # so right-click emits item_mouse_selected (context menu)
 	# Column widths (resizable by dragging the dividers in the header row).
 	_col_w = COL_DEFAULT_W.duplicate()
 	for c in COL_COUNT:
