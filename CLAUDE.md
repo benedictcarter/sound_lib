@@ -140,8 +140,11 @@ for non-obvious gotchas.
   transparently once built. App: **Download CLAP** (`_clap_dl_*` -> `--download`) +
   **Build CLAP index** (`_clapidx_*` -> `--only-missing`). Deps in
   `requirements-clap.txt` (onnxruntime[+gpu/directml], transformers, huggingface_hub —
-  no torch). ~0.18 s/file on GPU (~22 min full lib; mel preprocessing is the floor).
-  Validated: minigun query -> machine-guns/miniguns/explosions (cos ~0.6).
+  no torch). Throughput: `_extract_mel` is VECTORISED (strided frames + one batched
+  rfft; releases the GIL, ~2x the audio_utils Python loop, bit-identical ~4e-6), the
+  build loop extracts mels in a ThreadPool and runs ONE batched GPU forward per
+  `CLAP_BATCH` (32) files -> ~62 ms/file (~7 min full lib on a 5080 via DirectML;
+  was ~240 ms single/CPU). Validated: minigun -> machine-guns/explosions (cos ~0.6).
 - **CLAP text->audio search** (search by SOUND from words): `indexer/clap_search.py
   "<query>" <out> 500` embeds the query with the CLAP TEXT encoder (`clap_embed.
   embed_text` via `text_model.onnx`) and ranks `clap.npz` by cosine -> paths+scores,
