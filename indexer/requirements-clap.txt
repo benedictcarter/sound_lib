@@ -1,0 +1,10 @@
+# OPTIONAL — only needed if you want CLAP (audio+text) content search, a stronger
+# "Find similar" plus true text->audio search. Heavy: pulls in PyTorch (~2 GB) and
+# downloads a ~1 GB model on first use (into <repo>/models, gitignored).
+#
+#   py -m pip install -r indexer/requirements-clap.txt
+#   then in the app: "Download CLAP" -> "Build CLAP index"
+#
+# Without this, the app uses the tiny built-in acoustic fingerprints (no torch).
+torch>=2.0
+transformers>=4.35

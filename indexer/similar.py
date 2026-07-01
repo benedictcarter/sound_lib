@@ -28,28 +28,36 @@ def main() -> None:
     topn = int(sys.argv[3]) if len(sys.argv) > 3 else 500
 
     idx = json.loads(INDEX.read_text(encoding="utf-8"))
-    fp = Path(idx["library_root"]) / "fingerprints.npz"
-    if not fp.exists():
+    root = Path(idx["library_root"])
+    clap = root / "clap.npz"                             # prefer CLAP if it's built
+    fp = root / "fingerprints.npz"
+    src = clap if clap.exists() else fp
+    if not src.exists():
         Path(out).write_text(json.dumps({"ok": False, "error": "no fingerprints"}), encoding="utf-8")
-        sys.exit("fingerprints.npz missing — run: py indexer/fingerprint.py")
+        sys.exit("no clap.npz / fingerprints.npz — build one first")
 
-    data = np.load(fp, allow_pickle=True)
+    data = np.load(src, allow_pickle=True)
     vecs = data["vectors"].astype(np.float64)
     paths = [str(p) for p in data["paths"]]
     if query not in paths:
         Path(out).write_text(json.dumps(
-            {"ok": False, "error": "query not fingerprinted (build fingerprints)"}), encoding="utf-8")
-        sys.exit("query not in fingerprints")
-
-    # standardise per feature so timbre + spectral features weigh evenly
-    mu = vecs.mean(axis=0)
-    sd = vecs.std(axis=0) + 1e-9
-    Z = (vecs - mu) / sd
+            {"ok": False, "error": "query not fingerprinted (build the index)"}), encoding="utf-8")
+        sys.exit("query not in the index")
     qi = paths.index(query)
-    dist = np.linalg.norm(Z - Z[qi], axis=1)
-    dist[qi] = np.inf                                   # exclude the query itself
-    order = np.argsort(dist)[:topn]
-    scores = 1.0 / (1.0 + dist[order])                  # 0..1, higher = more similar
+
+    if src is clap:
+        # CLAP vectors are unit-normalised -> cosine similarity (dot product)
+        sims = vecs @ vecs[qi]
+        sims[qi] = -np.inf
+        order = np.argsort(-sims)[:topn]
+        scores = np.clip(sims[order], 0.0, 1.0)
+    else:
+        # lightweight features: standardise, then nearest by euclidean distance
+        Z = (vecs - vecs.mean(axis=0)) / (vecs.std(axis=0) + 1e-9)
+        dist = np.linalg.norm(Z - Z[qi], axis=1)
+        dist[qi] = np.inf                               # exclude the query itself
+        order = np.argsort(dist)[:topn]
+        scores = 1.0 / (1.0 + dist[order])              # 0..1, higher = more similar
 
     res = {
         "ok": True,

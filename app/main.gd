@@ -113,7 +113,7 @@ Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (
 
 [b]Two ways to search by sound[/b]
 • [b]Semantic[/b] (text): describe it in words — matches meaning of the metadata.
-• [b]Find similar[/b] (audio): right-click a file → ranks the library by how it actually SOUNDS (timbre/texture). Build it once with [b]Update fingerprints[/b] (top bar), like Update semantic index.
+• [b]Find similar[/b] (audio): right-click a file → ranks the library by how it actually SOUNDS (timbre/texture). Build it once with [b]Update fingerprints[/b] (top bar). [i]Optional:[/i] pip-install requirements-clap.txt, then [b]Download CLAP[/b] → [b]Build CLAP index[/b] for a stronger model (Find similar auto-uses it).
 
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
@@ -540,6 +540,15 @@ var _fp_progress_path: String = ""
 var _similar_thread: Thread = null       # "Find similar" query
 var _similar_busy: bool = false
 var _similar_result_path: String = ""
+var _clap_dl_thread: Thread = null       # optional CLAP model download
+var _clap_dl_busy: bool = false
+var _clap_dl_btn: Button
+var _clap_dl_result_path: String = ""
+var _clapidx_thread: Thread = null       # optional CLAP audio index build
+var _clapidx_busy: bool = false
+var _clapidx_btn: Button
+var _clapidx_poll: Timer
+var _clapidx_progress_path: String = ""
 
 # persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
 var _prefs: Dictionary = {}
@@ -653,6 +662,8 @@ func _ready() -> void:
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
 	_fp_progress_path = ProjectSettings.globalize_path("user://fingerprint_progress.json")
 	_similar_result_path = ProjectSettings.globalize_path("user://similar_result.json")
+	_clap_dl_result_path = ProjectSettings.globalize_path("user://clap_download.json")
+	_clapidx_progress_path = ProjectSettings.globalize_path("user://clap_progress.json")
 	_load_userdata()
 	_load_chopping()
 	_load_loudness()
@@ -831,6 +842,22 @@ func _build_ui() -> void:
 	_fp_btn.pressed.connect(_update_fingerprints)
 	bar0.add_child(_fp_btn)
 
+	_clap_dl_btn = Button.new()
+	_clap_dl_btn.text = "Download CLAP"
+	_clap_dl_btn.tooltip_text = "OPTIONAL: download the ~1 GB CLAP model (needs " \
+		+ "torch+transformers — pip install -r indexer/requirements-clap.txt). Gives a " \
+		+ "stronger Find similar. Model goes in <repo>/models (gitignored, not shipped)."
+	_clap_dl_btn.pressed.connect(_download_clap)
+	bar0.add_child(_clap_dl_btn)
+
+	_clapidx_btn = Button.new()
+	_clapidx_btn.text = "Build CLAP index"
+	_clapidx_btn.tooltip_text = "After downloading CLAP: embed every file's audio with " \
+		+ "it (slow on CPU) → clap.npz. Find similar then uses CLAP instead of the " \
+		+ "lightweight fingerprints."
+	_clapidx_btn.pressed.connect(_build_clap_index)
+	bar0.add_child(_clapidx_btn)
+
 	_sem_edit = LineEdit.new()
 	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
 	_sem_edit.clear_button_enabled = true
@@ -986,6 +1013,11 @@ func _build_ui() -> void:
 	_fp_poll.wait_time = 1.0
 	_fp_poll.timeout.connect(_fp_tick)
 	add_child(_fp_poll)
+
+	_clapidx_poll = Timer.new()
+	_clapidx_poll.wait_time = 1.0
+	_clapidx_poll.timeout.connect(_clapidx_tick)
+	add_child(_clapidx_poll)
 
 	# coalesce chopping.json writes so a slider/graph drag saves once, not per tick
 	_chop_save_debounce = Timer.new()
@@ -1969,6 +2001,95 @@ func _fp_finished() -> void:
 		if typeof(d) == TYPE_DICTIONARY:
 			n = int(d.get("analysed", 0))
 	_status_label.text = "Fingerprints updated — %d new file%s. Right-click a file → Find similar." % [
+		n, "" if n == 1 else "s"]
+
+
+# ----- optional CLAP: download the model, then build the audio index ------------
+func _download_clap() -> void:
+	if _clap_dl_busy:
+		return
+	if FileAccess.file_exists(_clap_dl_result_path):
+		DirAccess.remove_absolute(_clap_dl_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/clap_embed.py").simplify_path()
+	_clap_dl_busy = true
+	_clap_dl_btn.disabled = true
+	_clap_dl_btn.text = "Downloading CLAP… (~1 GB)"
+	_clap_dl_thread = Thread.new()
+	_clap_dl_thread.start(_clap_dl_run.bind(script, _clap_dl_result_path))
+
+
+func _clap_dl_run(script: String, result: String) -> void:
+	var output: Array = []
+	var args := [script, "--download", "--result", result]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_clap_dl_finished")
+
+
+func _clap_dl_finished() -> void:
+	_clap_dl_busy = false
+	if _clap_dl_thread:
+		_clap_dl_thread.wait_to_finish()
+		_clap_dl_thread = null
+	_clap_dl_btn.disabled = false
+	_clap_dl_btn.text = "Download CLAP"
+	var ok := false
+	var err := "CLAP needs torch + transformers — pip install -r indexer/requirements-clap.txt"
+	if FileAccess.file_exists(_clap_dl_result_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clap_dl_result_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			ok = bool(d.get("ok", false))
+			err = String(d.get("error", err))
+	_status_label.text = "CLAP model downloaded — now click 'Build CLAP index'." if ok else ("Download CLAP failed: " + err)
+
+
+func _build_clap_index() -> void:
+	if _clapidx_busy:
+		return
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/clap_embed.py").simplify_path()
+	if FileAccess.file_exists(_clapidx_progress_path):
+		DirAccess.remove_absolute(_clapidx_progress_path)
+	_clapidx_busy = true
+	_clapidx_btn.disabled = true
+	_clapidx_btn.text = "Scanning…"
+	_clapidx_thread = Thread.new()
+	_clapidx_thread.start(_clapidx_run.bind(script, _clapidx_progress_path))
+	_clapidx_poll.start()
+
+
+func _clapidx_run(script: String, progress: String) -> void:
+	var output: Array = []
+	var args := [script, "--only-missing", "--progress", progress]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_clapidx_finished")
+
+
+func _clapidx_tick() -> void:
+	if FileAccess.file_exists(_clapidx_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clapidx_progress_path))
+		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
+			_clapidx_btn.text = "CLAP %d / %d…" % [int(d.get("analysed", 0)), int(d.get("total", 0))]
+
+
+func _clapidx_finished() -> void:
+	_clapidx_poll.stop()
+	if _clapidx_thread:
+		_clapidx_thread.wait_to_finish()
+		_clapidx_thread = null
+	_clapidx_busy = false
+	_clapidx_btn.disabled = false
+	_clapidx_btn.text = "Build CLAP index"
+	var n := 0
+	if FileAccess.file_exists(_clapidx_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clapidx_progress_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			n = int(d.get("analysed", 0))
+	_status_label.text = "CLAP index updated — %d file%s. Find similar now uses CLAP." % [
 		n, "" if n == 1 else "s"]
 
 
@@ -4320,6 +4441,10 @@ func _exit_tree() -> void:
 		_fp_thread.wait_to_finish()
 	if _similar_thread and _similar_thread.is_started():
 		_similar_thread.wait_to_finish()
+	if _clap_dl_thread and _clap_dl_thread.is_started():
+		_clap_dl_thread.wait_to_finish()
+	if _clapidx_thread and _clapidx_thread.is_started():
+		_clapidx_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
