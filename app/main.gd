@@ -121,9 +121,8 @@ Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
 
-[b]Side panels[/b]
-• [b]Semantic[/b]: click a keyword to search by meaning.
-• [b]Keywords[/b]: click a keyword to add it to the text filter. The count = number of libraries it appears in."
+[b]Keywords panel[/b] (right)
+One list of the library's keywords; the [b]Filter / Semantic / CLAP[/b] radio at the top picks what a CLICK does — add it to the text Filter, run a meaning search, or a sound search. The count next to each = number of libraries it appears in."
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
@@ -595,9 +594,8 @@ var _status_label: Label
 var _kw_list: ItemList
 var _kw_filter: LineEdit
 var _kw_header: Label
-var _skw_list: ItemList                 # "Semantic" keyword panel (click -> semantic search)
-var _skw_filter: LineEdit
-var _skw_header: Label
+var _kw_hint: Label
+var _kw_mode: int = 0                    # 0 Filter, 1 Semantic, 2 CLAP — what a click does
 var _help_dialog: AcceptDialog
 var _keywords: Array = []   # [ [token, library_count], ... ] sorted desc
 
@@ -793,11 +791,8 @@ func _build_ui() -> void:
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_theme_constant_override("separation", 6)
 	outer.add_child(root)
-	var rightbox := HBoxContainer.new()            # right column: Semantic + Keywords
-	rightbox.add_theme_constant_override("separation", 6)
-	rightbox.add_child(_build_semantic_keyword_panel())
-	rightbox.add_child(_build_keyword_panel())
-	outer.add_child(rightbox)
+	outer.add_child(_build_keyword_panel())        # one panel; a mode picker (Filter/
+	                                               # Semantic/CLAP) sets what a click does
 	outer.set_deferred("split_offset", 5000)       # left takes the slack
 
 	# --- toolbar row: library folder (top-left) + path ------------------
@@ -1350,58 +1345,6 @@ func _passes_col_filters(rec: Dictionary) -> bool:
 
 # The "Semantic" keyword panel: same style as Keywords, but clicking a token runs
 # a MEANING-based search (into the semantic box) instead of a text quick-filter.
-func _build_semantic_keyword_panel() -> Control:
-	var panel := VBoxContainer.new()
-	panel.custom_minimum_size = Vector2(210, 0)
-	panel.add_theme_constant_override("separation", 4)
-
-	_skw_header = Label.new()
-	_skw_header.text = "Semantic"
-	panel.add_child(_skw_header)
-
-	var hint := Label.new()
-	hint.text = "click to search by meaning"
-	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	panel.add_child(hint)
-
-	_skw_filter = LineEdit.new()
-	_skw_filter.placeholder_text = "find keyword..."
-	_skw_filter.clear_button_enabled = true
-	_skw_filter.text_changed.connect(func(_t): _populate_semantic_keyword_list())
-	panel.add_child(_skw_filter)
-
-	_skw_list = ItemList.new()
-	_skw_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_skw_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_skw_list.item_clicked.connect(_on_semantic_keyword_clicked)
-	panel.add_child(_skw_list)
-	return panel
-
-
-func _populate_semantic_keyword_list() -> void:
-	if _skw_list == null:
-		return
-	var filt := _skw_filter.text.strip_edges().to_lower()
-	_skw_list.clear()
-	var shown := 0
-	for pair in _keywords:
-		var token: String = pair[0]
-		if filt != "" and not token.contains(filt):
-			continue
-		var idx := _skw_list.add_item("%s  (%d)" % [token, pair[1]])
-		_skw_list.set_item_metadata(idx, token)
-		shown += 1
-		if shown >= KW_MAX_SHOWN:
-			break
-	_skw_header.text = "Semantic (%d)" % _keywords.size()
-
-
-func _on_semantic_keyword_clicked(index: int, _at: Vector2, _mouse_btn: int) -> void:
-	var token := String(_skw_list.get_item_metadata(index))
-	_sem_edit.text = token                          # show it in the semantic box
-	_run_semantic(token)                            # meaning-based search
-
-
 func _show_help() -> void:
 	if _help_dialog == null:
 		_help_dialog = AcceptDialog.new()
@@ -1424,19 +1367,37 @@ func _show_help() -> void:
 	_help_dialog.popup_centered()
 
 
+# One Keywords panel; a radio picker chooses what a keyword CLICK does — add to the
+# text Filter, run a Semantic (meaning) search, or a CLAP (sound) search. Same list.
 func _build_keyword_panel() -> Control:
 	var panel := VBoxContainer.new()
-	panel.custom_minimum_size = Vector2(210, 0)
+	panel.custom_minimum_size = Vector2(216, 0)
 	panel.add_theme_constant_override("separation", 4)
 
 	_kw_header = Label.new()
 	_kw_header.text = "Keywords"
 	panel.add_child(_kw_header)
 
-	var hint := Label.new()
-	hint.text = "click to add to search"
-	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	panel.add_child(hint)
+	# mode radio: Filter / Semantic / CLAP (what a click applies)
+	var modebar := HBoxContainer.new()
+	modebar.add_theme_constant_override("separation", 2)
+	panel.add_child(modebar)
+	var grp := ButtonGroup.new()
+	var labels := ["Filter", "Semantic", "CLAP"]
+	for i in labels.size():
+		var b := Button.new()
+		b.text = labels[i]
+		b.toggle_mode = true
+		b.button_group = grp
+		b.focus_mode = Control.FOCUS_NONE
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.button_pressed = (i == _kw_mode)
+		b.pressed.connect(_set_kw_mode.bind(i))
+		modebar.add_child(b)
+
+	_kw_hint = Label.new()
+	_kw_hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	panel.add_child(_kw_hint)
 
 	_kw_filter = LineEdit.new()
 	_kw_filter.placeholder_text = "find keyword..."
@@ -1449,7 +1410,16 @@ func _build_keyword_panel() -> Control:
 	_kw_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_kw_list.item_clicked.connect(_on_keyword_clicked)
 	panel.add_child(_kw_list)
+	_set_kw_mode(_kw_mode)                          # set the hint text
 	return panel
+
+
+func _set_kw_mode(m: int) -> void:
+	_kw_mode = m
+	if _kw_hint:
+		_kw_hint.text = ["click a keyword → add to the text Filter",
+			"click a keyword → search by meaning (semantic)",
+			"click a keyword → search by sound (CLAP)"][m]
 
 
 # A small grey group label that heads each tool row.
@@ -1766,7 +1736,6 @@ func _build_keywords() -> void:
 		return a[0].naturalnocasecmp_to(b[0]) < 0
 	)
 	_populate_keyword_list()
-	_populate_semantic_keyword_list()
 
 
 func _populate_keyword_list() -> void:
@@ -1789,12 +1758,19 @@ func _populate_keyword_list() -> void:
 
 func _on_keyword_clicked(index: int, _at: Vector2, _mouse_btn: int) -> void:
 	var token := String(_kw_list.get_item_metadata(index))
-	# Append as an AND term to the search box if not already present.
-	var terms := _search.text.strip_edges().to_lower().split(" ", false)
-	if token in terms:
-		return
-	_search.text = (_search.text.strip_edges() + " " + token).strip_edges()
-	_apply()
+	match _kw_mode:
+		1:                                          # Semantic (meaning) search
+			if _sem_edit: _sem_edit.text = token
+			_run_semantic(token)
+		2:                                          # CLAP (sound) search
+			if _clap_edit: _clap_edit.text = token
+			_run_clap_search(token)
+		_:                                          # Filter: add as an AND term
+			var terms := _search.text.strip_edges().to_lower().split(" ", false)
+			if token in terms:
+				return
+			_search.text = (_search.text.strip_edges() + " " + token).strip_edges()
+			_apply()
 
 
 # ===========================================================================

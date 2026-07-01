@@ -154,6 +154,11 @@ for non-obvious gotchas.
   `_on_clap_submitted`/`_run_clap_search`/`_clap_search_finished`. Validated: "machine
   gun firing"->MP40/miniguns, "rain and thunder storm"->rain+thunder, "a monster
   growling"->zombie vocalisations.
+- **ONE Keywords panel** (right column) with a **Filter/Semantic/CLAP radio**
+  (`_kw_mode`, `_set_kw_mode`) that picks what a keyword CLICK does — add to the text
+  Filter, run a Semantic (meaning) search, or a CLAP (sound) search (`_on_keyword_
+  clicked` dispatches on `_kw_mode`). Same token list for all three (they share the
+  mined `_keywords`), so the old separate "Semantic" panel was collapsed into this.
 - **Semantic search** (meaning-based, NOT an LLM): `indexer/embed.py` embeds each
   file's text (filename+description+library+supplier) with a small local ONNX
   sentence model (fastembed, BAAI bge-small, 384-dim) -> `embeddings.npz` in the
