@@ -298,6 +298,31 @@ for non-obvious gotchas.
   `multi_selected` drives per-selection refresh (item_selected doesn't fire in
   SELECT_MULTI); autoplay is suppressed while Shift/Ctrl is held.
 
+## Standalone build (no Python for end users)
+- `indexer/tool.py` is a single dispatcher: `tool <cmd> [args]` runs any indexer
+  script (via `runpy`, exact CLI preserved). **PyInstaller** freezes it into one
+  `tool/tool.exe` (onedir) bundling Python + deps. The app's `_exec_tool` runs
+  `tool/tool.exe <cmd> <args>` when that exe exists (checked at `res://../tool/`),
+  else falls back to `py <script>.py` (dev). The app sets `SOUNDLIB_REPO` (=
+  `res://..`) so the (relocated/frozen) scripts resolve `app/index.json` +
+  `library.cfg` — every script's `REPO`/`INDEX` honours that env var.
+- `_load_index` reads `index.json` from the globalized DISK path (not `res://`,
+  which is the read-only pack in an export).
+- Build the tool: `py -m PyInstaller --noconfirm --name tool --console
+  --distpath . --collect-all fastembed --collect-all onnxruntime
+  --collect-binaries soundfile --collect-data soundfile
+  --collect-submodules scipy._external.array_api_compat
+  --collect-submodules scipy._lib.array_api_compat
+  --exclude-module transformers --exclude-module torch indexer/tool.py`
+  (scipy needs the `array_api_compat` submodules; soundfile needs its libsndfile
+  DLL). Export the app: Godot `--export-release "Windows Desktop"
+  app/SoundLibrary.exe`. Ship `app/SoundLibrary.exe` + `tool/` + `library.cfg`.
+- v1 standalone bundles core + SEMANTIC (fastembed). CLAP is EXCLUDED from the
+  freeze (transformers too heavy/fragile for PyInstaller) — it degrades gracefully.
+  To bundle CLAP later: drop the `transformers` dep from `clap_embed` (inline the
+  mel_filter_bank/window/power_to_db, use `tokenizers` directly) so only onnxruntime
+  is needed, then include it in the freeze.
+
 ## Common commands
 - Build index: `py indexer/index.py`  (`--full` to ignore cache)
 - Tune detection on sample files: `py indexer/explore_gaps.py`
