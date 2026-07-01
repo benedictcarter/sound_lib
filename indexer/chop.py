@@ -95,7 +95,7 @@ def main() -> None:
         idx += 1
         data = sf.read(str(audio), start=a, stop=b, dtype="float64", always_2d=True)[0]
         out = audio.parent / f"{stem}_chopped_{idx:03d}{ext}"
-        sf.write(str(out), data, sr, subtype=info.subtype, format=info.format)
+        sf.write(str(out), data, sr, subtype="PCM_16", format=info.format)   # chops are 16-bit
         written.append(out)
 
     records = _add_to_index(written, parent)

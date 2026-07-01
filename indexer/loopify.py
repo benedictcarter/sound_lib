@@ -83,7 +83,7 @@ def main() -> None:
     stem = audio.stem
     ext = audio.suffix                      # includes the dot
     out = audio.parent / f"{stem}_loop{ext}"
-    sf.write(str(out), looped, sr, subtype=info.subtype, format=info.format)
+    sf.write(str(out), looped, sr, subtype="PCM_16", format=info.format)     # loops are 16-bit
 
     records = CHOP._add_to_index([out], parent)
     Path(result_path).write_text(

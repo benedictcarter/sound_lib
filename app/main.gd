@@ -109,7 +109,7 @@ Click a row to auto-analyse and see it. Kept sound = [b]green[/b], removed = gre
 • [b]Play chops[/b]: auditions the pieces with gaps. [b]Make chops[/b]: writes each piece as name_chopped_NNN.wav (original kept).
 
 [b]Right-click a row[/b]
-Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (audition) · Make loop / chops · Convert to WAV · Delete.
+Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (audition) · Make loop / chops · Convert to WAV · [b]Convert to 16-bit[/b] (a copy, same rate) · Delete. (Chops + loops you make are always 16-bit.)
 
 [b]Two ways to search by sound[/b]
 • [b]Semantic[/b] (text): describe it in words — matches meaning of the metadata.
@@ -497,6 +497,10 @@ var _convert_thread: Thread = null     # non-WAV (mp3/…) -> sibling WAV decode
 var _convert_busy: bool = false
 var _convert_result_path: String = ""
 var _convert_then: String = ""         # ctx action to run once the decode lands
+var _to16_thread: Thread = null        # "Convert to 16-bit" copy
+var _to16_busy: bool = false
+var _to16_result_path: String = ""
+var _to16_tags: String = ""            # source tags to inherit onto the copy
 var _confirm_dialog: ConfirmationDialog  # Del -> yes/no delete-to-Recycle-Bin
 var _delete_pending: Array = []          # records awaiting delete confirmation
 var _index_generated: String = ""        # preserved index.json "generated" stamp
@@ -655,6 +659,7 @@ func _ready() -> void:
 	_loop_result_path = ProjectSettings.globalize_path("user://loop_result.json")
 	_sl_result_path = ProjectSettings.globalize_path("user://suggest_loop.json")
 	_convert_result_path = ProjectSettings.globalize_path("user://to_wav_result.json")
+	_to16_result_path = ProjectSettings.globalize_path("user://to_16bit_result.json")
 	_sg_renames_path = ProjectSettings.globalize_path("user://analyse_renames.json")
 	_pa_paths_file = ProjectSettings.globalize_path("user://analyse_paths.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
@@ -957,6 +962,7 @@ func _build_ui() -> void:
 	_ctx_menu.add_item("Make chops", 5)
 	_ctx_menu.add_separator()
 	_ctx_menu.add_item("Convert to WAV", 6)
+	_ctx_menu.add_item("Convert to 16-bit (copy)", 9)
 	_ctx_menu.add_separator()
 	_ctx_menu.add_item("Delete…", 7)
 	_ctx_menu.id_pressed.connect(_on_ctx_menu)
@@ -2091,6 +2097,58 @@ func _clapidx_finished() -> void:
 			n = int(d.get("analysed", 0))
 	_status_label.text = "CLAP index updated — %d file%s. Find similar now uses CLAP." % [
 		n, "" if n == 1 else "s"]
+
+
+# ----- "Convert to 16-bit": write a 16-bit copy beside the original ------------
+func _convert_16bit(rec: Dictionary) -> void:
+	if _to16_busy:
+		return
+	var bits: Variant = rec.get("bit_depth")
+	if typeof(bits) != TYPE_NIL and int(bits) <= 16:
+		_status_label.text = "Already 16-bit (or lower) — nothing to convert."
+		return
+	var abs := _abs_path(rec)
+	if not FileAccess.file_exists(abs):
+		_status_label.text = "File not found: %s" % abs
+		return
+	if FileAccess.file_exists(_to16_result_path):
+		DirAccess.remove_absolute(_to16_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/to_16bit.py").simplify_path()
+	_to16_busy = true
+	_to16_tags = _get_tags(rec)                    # the copy inherits the source's tags
+	_an_status.text = "Writing a 16-bit copy of %s…" % String(rec.get("filename", ""))
+	_to16_thread = Thread.new()
+	_to16_thread.start(_to16_run.bind(script, abs, _to16_result_path))
+
+
+func _to16_run(script: String, audio: String, result: String) -> void:
+	var output: Array = []
+	var args := [script, audio, result]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_to16_finished")
+
+
+func _to16_finished() -> void:
+	_to16_busy = false
+	if _to16_thread:
+		_to16_thread.wait_to_finish()
+		_to16_thread = null
+	if not FileAccess.file_exists(_to16_result_path):
+		_an_status.text = "Convert to 16-bit failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_to16_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		_an_status.text = "Convert to 16-bit error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		return
+	var recs: Array = d.get("records", [])
+	_inherit_tags_to(recs, _to16_tags)             # copy carries the source's tags
+	_merge_new_records(recs)
+	_select_row_by_path(String(d.get("out", "")))
+	_analyse_paths(_paths_of(recs))                # auto-fill dB for the new copy
+	_an_status.text = "16-bit copy added: %s" % String(d.get("out", "")).get_file()
 
 
 # ----- "Find similar": rank the library by how close a file SOUNDS to _ctx_rec ---
@@ -3979,6 +4037,8 @@ func _on_ctx_menu(id: int) -> void:
 			_confirm_delete_selected()
 		8:                                          # content-based similarity search
 			_find_similar(_ctx_rec)
+		9:                                          # 16-bit copy (only if it's higher)
+			_convert_16bit(_ctx_rec)
 
 
 # Run a ctx action on _ctx_rec. Non-WAV sources (mp3/…) are decoded to a sibling
@@ -4445,6 +4505,8 @@ func _exit_tree() -> void:
 		_clap_dl_thread.wait_to_finish()
 	if _clapidx_thread and _clapidx_thread.is_started():
 		_clapidx_thread.wait_to_finish()
+	if _to16_thread and _to16_thread.is_started():
+		_to16_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
