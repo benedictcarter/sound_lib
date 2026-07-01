@@ -841,97 +841,10 @@ func _build_ui() -> void:
 
 	_build_num_popup()
 
-	_build_analyser(root)
-
-	# --- seek strip directly under the visualiser (aligned; seek only) --
-	_seekbar = SeekBar.new()
-	_seekbar.custom_minimum_size = Vector2(0, 16)
-	_seekbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_seekbar.tooltip_text = "Drag to move the play position (does not change the chop dB)."
-	_seekbar.seek_requested.connect(_on_graph_seek)
-	root.add_child(_seekbar)
-
-	# --- player bar -----------------------------------------------------
-	var pbar := HBoxContainer.new()
-	pbar.add_theme_constant_override("separation", 8)
-	root.add_child(pbar)
-
-	_play_btn = Button.new()
-	_play_btn.text = "Play"
-	_play_btn.custom_minimum_size = Vector2(70, 0)
-	_play_btn.pressed.connect(_on_play_pressed)
-	pbar.add_child(_play_btn)
-
-	var stop := Button.new()
-	stop.text = "Stop"
-	stop.pressed.connect(_on_stop_pressed)
-	pbar.add_child(stop)
-
-	_autoplay.focus_mode = Control.FOCUS_NONE      # don't eat the Space shortcut
-	pbar.add_child(_autoplay)                      # next to Play / Stop / Loop
-
-	_loop_chk = CheckButton.new()
-	_loop_chk.text = "Loop"
-	_loop_chk.tooltip_text = "Replay this track: loop the current track seamlessly."
-	_loop_chk.focus_mode = Control.FOCUS_NONE      # don't eat the Space shortcut
-	_loop_chk.toggled.connect(_on_loop_toggled)
-	pbar.add_child(_loop_chk)
-
-	_time_label = Label.new()
-	_time_label.custom_minimum_size = Vector2(110, 0)
-	_time_label.text = "0:00 / 0:00"
-	pbar.add_child(_time_label)
-
-	var vlab := Label.new()
-	vlab.text = "Vol"
-	pbar.add_child(vlab)
-	_vol_slider = HSlider.new()
-	_vol_slider.min_value = 0.0
-	_vol_slider.max_value = 1.0
-	_vol_slider.step = 0.01
-	_vol_slider.value = 0.9
-	_vol_slider.custom_minimum_size = Vector2(110, 0)
-	_vol_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_vol_slider.value_changed.connect(_on_volume_changed)
-	pbar.add_child(_vol_slider)
-	_on_volume_changed(0.9)
-
-	# (Level is set directly in the table's Level column / bulk type-over.)
-
-	# --- rating + now-playing row ---------------------------------------
-	# Rating controls first; the expanding now-playing label goes LAST so it
-	# doesn't push the star buttons off-screen.
-	var nbar := HBoxContainer.new()
-	nbar.add_theme_constant_override("separation", 6)
-	root.add_child(nbar)
-
-	var rlab := Label.new()
-	rlab.text = "Rate selected:"
-	nbar.add_child(rlab)
-	for i in range(1, 6):
-		var b := Button.new()
-		b.custom_minimum_size = Vector2(34, 0)
-		b.tooltip_text = "%d star%s" % [i, "" if i == 1 else "s"]
-		b.pressed.connect(_on_star_pressed.bind(i))
-		nbar.add_child(b)
-		_star_btns.append(b)
-	var clr := Button.new()
-	clr.text = "Clear"
-	clr.pressed.connect(_on_star_pressed.bind(0))
-	nbar.add_child(clr)
-	_refresh_star_buttons(null)
-
-	var rhint := Label.new()
-	rhint.text = "  (or click stars in the Rating column; right-click clears)"
-	rhint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	nbar.add_child(rhint)
-
-	nbar.add_child(VSeparator.new())
-	_now_label = Label.new()
-	_now_label.text = "No file loaded."
-	_now_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_now_label.clip_text = true
-	nbar.add_child(_now_label)
+	# Lower section, grouped into rows: transport+rating, then loop, then chops,
+	# then the visualiser at the very bottom.
+	_build_transport_row(root)     # Row 1: play/stop/autoplay/loop/vol + rating
+	_build_analyser(root)          # Row 2 (loop) + Row 3 (chops) + visualiser (bottom)
 
 	# (status label lives on the top "Open folder" row — built there)
 
@@ -1282,42 +1195,94 @@ func _build_keyword_panel() -> Control:
 	return panel
 
 
-func _build_analyser(root: VBoxContainer) -> void:
+# A small grey group label that heads each tool row.
+func _group_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.custom_minimum_size = Vector2(52, 0)
+	l.add_theme_color_override("font_color", Color(0.6, 0.68, 0.82))
+	return l
+
+
+# Row 1: standard transport (play/stop/autoplay/loop/vol) + rating + now-playing.
+func _build_transport_row(root: VBoxContainer) -> void:
 	var bar := HBoxContainer.new()
 	bar.add_theme_constant_override("separation", 8)
 	root.add_child(bar)
 
-	var an_btn := Button.new()
-	an_btn.text = "Analyse selected"
-	an_btn.pressed.connect(_analyse_selected)
-	bar.add_child(an_btn)
+	_play_btn = Button.new()
+	_play_btn.text = "Play"
+	_play_btn.custom_minimum_size = Vector2(70, 0)
+	_play_btn.pressed.connect(_on_play_pressed)
+	bar.add_child(_play_btn)
 
-	var sug := Button.new()
-	sug.text = "Suggest"
-	sug.tooltip_text = "Set the silence threshold from this file's loudness histogram"
-	sug.pressed.connect(_apply_suggested)
-	bar.add_child(sug)
+	var stop := Button.new()
+	stop.text = "Stop"
+	stop.pressed.connect(_on_stop_pressed)
+	bar.add_child(stop)
 
-	_sil_slider = _add_slider(bar, "Silence", -90, 0, 1, DEF_SILENCE_DB)
-	_sil_lbl = bar.get_child(bar.get_child_count() - 1) as Label
-	_gap_slider = _add_slider(bar, "Min gap", 0.0, 5.0, 0.1, DEF_MIN_GAP_S)
-	_gap_lbl = bar.get_child(bar.get_child_count() - 1) as Label
-	_snd_slider = _add_slider(bar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
-	_snd_lbl = bar.get_child(bar.get_child_count() - 1) as Label
+	_autoplay.focus_mode = Control.FOCUS_NONE      # don't eat the Space shortcut
+	bar.add_child(_autoplay)
 
-	var playchops := Button.new()
-	playchops.text = "Play chops"
-	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
-		+ "between them, so the boundaries are audibly obvious."
-	playchops.pressed.connect(_play_chops)
-	bar.add_child(playchops)
+	_loop_chk = CheckButton.new()
+	_loop_chk.text = "Loop"
+	_loop_chk.tooltip_text = "Replay this track: loop the current track seamlessly."
+	_loop_chk.focus_mode = Control.FOCUS_NONE
+	_loop_chk.toggled.connect(_on_loop_toggled)
+	bar.add_child(_loop_chk)
 
-	_chop_btn = Button.new()
-	_chop_btn.text = "Chop to files"
-	_chop_btn.tooltip_text = "Write each piece as name_chopped_NNN.wav next to the " \
-		+ "original (the original is KEPT). Re-run the indexer to see them."
-	_chop_btn.pressed.connect(_chop_selected)
-	bar.add_child(_chop_btn)
+	_time_label = Label.new()
+	_time_label.custom_minimum_size = Vector2(110, 0)
+	_time_label.text = "0:00 / 0:00"
+	bar.add_child(_time_label)
+
+	var vlab := Label.new()
+	vlab.text = "Vol"
+	bar.add_child(vlab)
+	_vol_slider = HSlider.new()
+	_vol_slider.min_value = 0.0
+	_vol_slider.max_value = 1.0
+	_vol_slider.step = 0.01
+	_vol_slider.value = 0.9
+	_vol_slider.custom_minimum_size = Vector2(110, 0)
+	_vol_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_vol_slider.value_changed.connect(_on_volume_changed)
+	bar.add_child(_vol_slider)
+	_on_volume_changed(0.9)
+
+	bar.add_child(VSeparator.new())
+	var rlab := Label.new()
+	rlab.text = "Rate:"
+	rlab.tooltip_text = "Rate the selected row (or click stars in the Rating column; right-click clears)."
+	bar.add_child(rlab)
+	for i in range(1, 6):
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(34, 0)
+		b.tooltip_text = "%d star%s" % [i, "" if i == 1 else "s"]
+		b.pressed.connect(_on_star_pressed.bind(i))
+		bar.add_child(b)
+		_star_btns.append(b)
+	var clr := Button.new()
+	clr.text = "Clear"
+	clr.pressed.connect(_on_star_pressed.bind(0))
+	bar.add_child(clr)
+	_refresh_star_buttons(null)
+
+	bar.add_child(VSeparator.new())
+	_now_label = Label.new()
+	_now_label.text = "No file loaded."
+	_now_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_now_label.clip_text = true
+	bar.add_child(_now_label)
+
+
+# Row 2 (loop) + Row 3 (chops) + the visualiser at the very bottom.
+func _build_analyser(root: VBoxContainer) -> void:
+	# --- Row 2: LOOP ---------------------------------------------------
+	var loopbar := HBoxContainer.new()
+	loopbar.add_theme_constant_override("separation", 8)
+	root.add_child(loopbar)
+	loopbar.add_child(_group_label("Loop"))
 
 	_suggest_loop_btn = Button.new()
 	_suggest_loop_btn.text = "Suggest loop"
@@ -1326,7 +1291,7 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "the steady sustain for textures (flame, rain). Sets the region + crossfade " \
 		+ "and previews it — tweak, then Make loop."
 	_suggest_loop_btn.pressed.connect(_suggest_loop)
-	bar.add_child(_suggest_loop_btn)
+	loopbar.add_child(_suggest_loop_btn)
 
 	_loop_btn = Button.new()
 	_loop_btn.text = "Make loop"
@@ -1334,7 +1299,7 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "name_loop.wav next to the original — equal-power crossfade so it wraps " \
 		+ "with no click/seam. Original kept. Set the crossfade (ms) at right."
 	_loop_btn.pressed.connect(_make_loop)
-	bar.add_child(_loop_btn)
+	loopbar.add_child(_loop_btn)
 
 	_xfade_chk = CheckButton.new()
 	_xfade_chk.text = "Crossfade"
@@ -1342,18 +1307,51 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "loop (in memory — nothing written). Turn Loop on and press Play chops to " \
 		+ "audition; tweak Xfade ms (Enter) and re-drag the region to experiment."
 	_xfade_chk.toggled.connect(_on_xfade_changed)
-	bar.add_child(_xfade_chk)
+	loopbar.add_child(_xfade_chk)
 
 	var xlab := Label.new()
 	xlab.text = "Xfade ms"
-	bar.add_child(xlab)
+	loopbar.add_child(xlab)
 	_xfade_edit = LineEdit.new()
 	_xfade_edit.text = "100"
 	_xfade_edit.custom_minimum_size = Vector2(48, 0)
 	_xfade_edit.tooltip_text = "Crossfade length in milliseconds for the loop preview " \
 		+ "and Make loop (longer = smoother but blends more of the ends). Enter applies."
 	_xfade_edit.text_submitted.connect(func(_t): _on_xfade_changed(true))
-	bar.add_child(_xfade_edit)
+	loopbar.add_child(_xfade_edit)
+
+	# --- Row 3: CHOPS --------------------------------------------------
+	var chopbar := HBoxContainer.new()
+	chopbar.add_theme_constant_override("separation", 8)
+	root.add_child(chopbar)
+	chopbar.add_child(_group_label("Chops"))
+
+	var sug := Button.new()
+	sug.text = "Suggest"
+	sug.tooltip_text = "Set the silence threshold from this file's loudness histogram"
+	sug.pressed.connect(_apply_suggested)
+	chopbar.add_child(sug)
+
+	_sil_slider = _add_slider(chopbar, "Silence", -90, 0, 1, DEF_SILENCE_DB)
+	_sil_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
+	_gap_slider = _add_slider(chopbar, "Min gap", 0.0, 5.0, 0.1, DEF_MIN_GAP_S)
+	_gap_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
+	_snd_slider = _add_slider(chopbar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
+	_snd_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
+
+	var playchops := Button.new()
+	playchops.text = "Play chops"
+	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
+		+ "between them, so the boundaries are audibly obvious."
+	playchops.pressed.connect(_play_chops)
+	chopbar.add_child(playchops)
+
+	_chop_btn = Button.new()
+	_chop_btn.text = "Chop to files"
+	_chop_btn.tooltip_text = "Write each piece as name_chopped_NNN.wav next to the " \
+		+ "original (the original is KEPT). Re-run the indexer to see them."
+	_chop_btn.pressed.connect(_chop_selected)
+	chopbar.add_child(_chop_btn)
 
 	_sg_btn = Button.new()
 	_sg_btn.text = "Analyse audio (chops + loudness)"
@@ -1361,13 +1359,14 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "compute both the chop suggestion AND the loudness (fills the Chop, orig dB " \
 		+ "and final dB columns). Slow on a fresh library; columns fill in as it runs."
 	_sg_btn.pressed.connect(_suggest_missing_chops)
-	bar.add_child(_sg_btn)
+	chopbar.add_child(_sg_btn)
 
 	_an_status = Label.new()
 	_an_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_an_status.text = "Analyser idle."
-	bar.add_child(_an_status)
+	chopbar.add_child(_an_status)
 
+	# --- visualiser at the very bottom (graph + aligned seek strip) ----
 	_graph = WaveGraph.new()
 	_graph.custom_minimum_size = Vector2(0, 120)
 	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1379,6 +1378,14 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_graph.region_selected.connect(_on_graph_region_selected)
 	_graph.region_committed.connect(_on_region_committed)
 	root.add_child(_graph)
+
+	_seekbar = SeekBar.new()
+	_seekbar.custom_minimum_size = Vector2(0, 16)
+	_seekbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_seekbar.tooltip_text = "Drag to move the play position (does not change the chop dB)."
+	_seekbar.seek_requested.connect(_on_graph_seek)
+	root.add_child(_seekbar)
+
 	_update_param_labels()
 
 
