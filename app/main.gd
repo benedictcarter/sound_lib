@@ -452,6 +452,9 @@ var _delete_pending: Array = []          # records awaiting delete confirmation
 var _index_generated: String = ""        # preserved index.json "generated" stamp
 var _info_dialog: AcceptDialog            # simple summary popup (renames, etc.)
 var _sg_renames_path: String = ""         # analyse job's invalid-name rename report
+var _lib_picker: FileDialog               # "Choose library folder" directory picker
+var _reindex_thread: Thread = null        # re-index after changing the library folder
+var _reindex_busy: bool = false
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -701,11 +704,21 @@ func _build_ui() -> void:
 	barlib.add_theme_constant_override("separation", 8)
 	root.add_child(barlib)
 
-	var openbtn := Button.new()
-	openbtn.text = "Open folder"
-	openbtn.tooltip_text = "Open the selected file's folder (or the library root) in your file browser."
-	openbtn.pressed.connect(_on_reveal)
-	barlib.add_child(openbtn)
+	var libbtn := Button.new()
+	libbtn.text = "Choose library folder"
+	libbtn.tooltip_text = "Pick the folder that holds your sound library. The app " \
+		+ "updates library.cfg, re-indexes that folder, and reloads. (To open a " \
+		+ "single track's folder, right-click it → Open folder.)"
+	libbtn.pressed.connect(_on_choose_library)
+	barlib.add_child(libbtn)
+
+	_sg_btn = Button.new()
+	_sg_btn.text = "Analyse Audio"
+	_sg_btn.tooltip_text = "For every file not analysed yet, read its audio once and " \
+		+ "compute BOTH the chop suggestion and the loudness (fills the Chop, orig dB " \
+		+ "and final dB columns). Slow on a fresh library; columns fill in as it runs."
+	_sg_btn.pressed.connect(_suggest_missing_chops)
+	barlib.add_child(_sg_btn)
 
 	_lib_label = Label.new()                       # the library-root path
 	_lib_label.clip_text = true
@@ -1373,14 +1386,7 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_snd_slider = _add_slider(chopbar, "Min sound", 0.0, 2.0, 0.05, DEF_MIN_SOUND_S)
 	_snd_lbl = chopbar.get_child(chopbar.get_child_count() - 1) as Label
 
-	_sg_btn = Button.new()
-	_sg_btn.text = "Analyse audio (chops + loudness)"
-	_sg_btn.tooltip_text = "For every file not analysed yet, read its audio ONCE and " \
-		+ "compute both the chop suggestion AND the loudness (fills the Chop, orig dB " \
-		+ "and final dB columns). Slow on a fresh library; columns fill in as it runs."
-	_sg_btn.pressed.connect(_suggest_missing_chops)
-	chopbar.add_child(_sg_btn)
-
+	# ('Analyse Audio' now lives on the top library row, next to Choose library folder.)
 	_an_status = Label.new()
 	_an_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_an_status.text = "Analyser idle."
@@ -2388,6 +2394,78 @@ func _on_reveal() -> void:
 	if typeof(rec) == TYPE_DICTIONARY:
 		folder = _library_root.path_join(String(rec.get("path", "")).get_base_dir())
 	OS.shell_open(folder)
+
+
+# ----- choose (change) the library folder: pick -> library.cfg -> re-index ------
+func _on_choose_library() -> void:
+	if _reindex_busy:
+		return
+	if _lib_picker == null:
+		_lib_picker = FileDialog.new()
+		_lib_picker.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+		_lib_picker.access = FileDialog.ACCESS_FILESYSTEM
+		_lib_picker.use_native_dialog = true
+		_lib_picker.title = "Choose your sound library folder"
+		_lib_picker.dir_selected.connect(_on_library_chosen)
+		add_child(_lib_picker)
+	if DirAccess.dir_exists_absolute(_library_root):
+		_lib_picker.current_dir = _library_root
+	_lib_picker.popup_centered(Vector2i(900, 620))
+
+
+func _on_library_chosen(dir: String) -> void:
+	var newroot := dir.replace("\\", "/")
+	if newroot == _library_root:
+		_status_label.text = "Library unchanged."
+		return
+	if not DirAccess.dir_exists_absolute(newroot):
+		_status_label.text = "Folder not found: %s" % newroot
+		return
+	var cfg := ProjectSettings.globalize_path("res://../library.cfg").simplify_path()
+	var f := FileAccess.open(cfg, FileAccess.WRITE)
+	if f == null:
+		_status_label.text = "Could not write library.cfg"
+		return
+	f.store_string(JSON.stringify({"library_root": newroot}))
+	f.close()
+	# rewire the user-data sidecars to the new library (they live beside the audio)
+	_ud_path = newroot.path_join("userdata.json")
+	_chop_path = newroot.path_join("chopping.json")
+	_lo_path = newroot.path_join("loudness.json")
+	_reindex_library()
+
+
+func _reindex_library() -> void:
+	if _reindex_busy:
+		return
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/index.py").simplify_path()
+	_reindex_busy = true
+	_status_label.text = "Indexing the library… (reading headers; this can take a minute)"
+	_reindex_thread = Thread.new()
+	_reindex_thread.start(_reindex_run.bind(script))
+
+
+func _reindex_run(script: String) -> void:
+	var output: Array = []
+	var code := OS.execute("py", [script], output, true)
+	if code == -1:
+		OS.execute("python", [script], output, true)
+	call_deferred("_reindex_finished")
+
+
+func _reindex_finished() -> void:
+	_reindex_busy = false
+	if _reindex_thread:
+		_reindex_thread.wait_to_finish()
+		_reindex_thread = null
+	if not FileAccess.file_exists("res://index.json"):
+		_status_label.text = "Indexing failed (no index.json). Is python on PATH?"
+		return
+	_load_userdata()                           # sidecars for the (possibly new) library
+	_load_chopping()
+	_load_loudness()
+	_load_index()                              # rebuilds the view + sets the status line
 
 
 # Space toggles play/pause globally -- except while typing in a text field (the
@@ -3902,6 +3980,8 @@ func _exit_tree() -> void:
 		_convert_thread.wait_to_finish()
 	if _sl_thread and _sl_thread.is_started():
 		_sl_thread.wait_to_finish()
+	if _reindex_thread and _reindex_thread.is_started():
+		_reindex_thread.wait_to_finish()
 
 
 func _an_finished() -> void:

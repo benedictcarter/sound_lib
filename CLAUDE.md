@@ -12,6 +12,11 @@ for non-obvious gotchas.
 - `library.cfg` — JSON pointing at the audio library root.
 
 ## Key facts
+- **Top library row**: "Choose library folder" (`_on_choose_library` -> FileDialog
+  dir picker -> writes `library.cfg`, rewires the userdata/chopping/loudness paths,
+  then re-indexes in a thread `_reindex_library`/`_reindex_finished` and reloads) +
+  "Analyse Audio" (`_sg_btn`, moved here from the Chops row) + the library path +
+  status. The row right-click's "Open folder" (`_on_reveal`) handles a single track.
 - **Non-WAV audio (mp3/ogg/flac/aiff…)**: the app is WAV-centric (Godot playback +
   in-memory PCM slicing for chop/loop/preview). `index.parse_audio` reads non-WAV
   tech metadata via soundfile (so the row shows duration/rate/ch; bit_depth None for
