@@ -107,6 +107,20 @@ for non-obvious gotchas.
   filename + library, de-duped per library; frequency = #libraries containing
   the token. Click appends the token to the search box (AND quick-filter).
   Tune the `STOPWORDS` set in main.gd to filter noise words.
+- **Content-based similarity** (search by SOUND, not text): `indexer/fingerprint.py`
+  extracts a ~48-dim acoustic feature vector per file (MFCC mean/std + spectral
+  centroid/bandwidth/rolloff + ZCR + RMS; resampled to 22050 for comparability,
+  no big model — just soundfile+numpy+scipy) -> `fingerprints.npz` in the LIBRARY
+  ROOT. Incremental `--only-missing` (+`--progress`); app "Update fingerprints"
+  button (`_fp_*`, mirrors Update semantic index). Right-click a row -> **Find
+  similar sounds** runs `indexer/similar.py "<rel>" <out> 500` (`_find_similar`/
+  `_similar_finished`): standardises (z-score) the fingerprints, ranks by euclidean
+  distance to the query, returns paths + a 0..1 similarity score. Results REUSE the
+  semantic display pipeline via `_apply_ranked_results` (sets `_sem_ranked`/
+  `_sem_scores`, Score column, sort desc; text Filter still narrows). CLAP (audio+
+  text, ~1GB) was considered but rejected as too big for git — this is the tiny
+  local alternative. The **Semantic keyword panel** (`_skw_*`, left of Keywords)
+  clicks a token into a semantic (meaning) search; Keywords clicks into text filter.
 - **Semantic search** (meaning-based, NOT an LLM): `indexer/embed.py` embeds each
   file's text (filename+description+library+supplier) with a small local ONNX
   sentence model (fastembed, BAAI bge-small, 384-dim) -> `embeddings.npz` in the
@@ -256,6 +270,8 @@ for non-obvious gotchas.
 - Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json]`
 - Bake a seamless loop: `py indexer/loopify.py <audio> <spec.json> <result.json>`
 - Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)
+- Build/update audio fingerprints: `py indexer/fingerprint.py [--only-missing]`  (-> library_root/fingerprints.npz)
+- Find files that SOUND similar: `py indexer/similar.py "<rel_path>" <out.json> [topn]`
 - Run the Python tests: `py -m pytest`  (golden tests in `indexer/tests/`)
 - Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
 - Run app: `Godot..._win64.exe --path app`

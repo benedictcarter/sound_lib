@@ -2,6 +2,9 @@
 /index.json
 /app/index.json
 /app/embeddings.npz
+# semantic + acoustic indexes live in the LIBRARY ROOT (outside the repo); these
+# catch stray copies only.
+*.npz
 # atomic-write temp/backup artifacts (userdata/chopping/loudness/index)
 *.json.tmp
 *.json.bak

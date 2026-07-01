@@ -109,7 +109,11 @@ Click a row to auto-analyse and see it. Kept sound = [b]green[/b], removed = gre
 • [b]Play chops[/b]: auditions the pieces with gaps. [b]Make chops[/b]: writes each piece as name_chopped_NNN.wav (original kept).
 
 [b]Right-click a row[/b]
-Open folder · Copy path · Suggest loop / chops (audition) · Make loop / chops · Convert to WAV · Delete.
+Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (audition) · Make loop / chops · Convert to WAV · Delete.
+
+[b]Two ways to search by sound[/b]
+• [b]Semantic[/b] (text): describe it in words — matches meaning of the metadata.
+• [b]Find similar[/b] (audio): right-click a file → ranks the library by how it actually SOUNDS (timbre/texture). Build it once with [b]Update fingerprints[/b] (top bar), like Update semantic index.
 
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
@@ -528,6 +532,14 @@ var _emb_busy: bool = false
 var _emb_btn: Button
 var _emb_poll: Timer
 var _emb_progress_path: String = ""
+var _fp_thread: Thread = null            # build audio fingerprints (content-based search)
+var _fp_busy: bool = false
+var _fp_btn: Button
+var _fp_poll: Timer
+var _fp_progress_path: String = ""
+var _similar_thread: Thread = null       # "Find similar" query
+var _similar_busy: bool = false
+var _similar_result_path: String = ""
 
 # persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
 var _prefs: Dictionary = {}
@@ -639,6 +651,8 @@ func _ready() -> void:
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
+	_fp_progress_path = ProjectSettings.globalize_path("user://fingerprint_progress.json")
+	_similar_result_path = ProjectSettings.globalize_path("user://similar_result.json")
 	_load_userdata()
 	_load_chopping()
 	_load_loudness()
@@ -809,6 +823,14 @@ func _build_ui() -> void:
 	_emb_btn.pressed.connect(_update_embeddings)
 	bar0.add_child(_emb_btn)
 
+	_fp_btn = Button.new()
+	_fp_btn.text = "Update fingerprints"
+	_fp_btn.tooltip_text = "Build the acoustic fingerprint for any file that lacks one " \
+		+ "(reads its audio). Needed for right-click → Find similar (content-based search). " \
+		+ "Slow on a fresh library; incremental after."
+	_fp_btn.pressed.connect(_update_fingerprints)
+	bar0.add_child(_fp_btn)
+
 	_sem_edit = LineEdit.new()
 	_sem_edit.placeholder_text = "describe a sound — e.g. \"guns shooting\" — and press Enter (meaning, not words)"
 	_sem_edit.clear_button_enabled = true
@@ -902,6 +924,7 @@ func _build_ui() -> void:
 	_ctx_menu.add_separator()
 	_ctx_menu.add_item("Suggest loop  (audition)", 2)
 	_ctx_menu.add_item("Suggest chops  (audition)", 3)
+	_ctx_menu.add_item("Find similar sounds", 8)
 	_ctx_menu.add_separator()
 	_ctx_menu.add_item("Make loop", 4)
 	_ctx_menu.add_item("Make chops", 5)
@@ -958,6 +981,11 @@ func _build_ui() -> void:
 	_emb_poll.wait_time = 1.0
 	_emb_poll.timeout.connect(_emb_tick)
 	add_child(_emb_poll)
+
+	_fp_poll = Timer.new()
+	_fp_poll.wait_time = 1.0
+	_fp_poll.timeout.connect(_fp_tick)
+	add_child(_fp_poll)
 
 	# coalesce chopping.json writes so a slider/graph drag saves once, not per tick
 	_chop_save_debounce = Timer.new()
@@ -1819,9 +1847,14 @@ func _sem_finished() -> void:
 		_status_label.text = "Semantic search error: %s" % (
 			d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
 		return
-	var paths: Array = d.get("paths", [])
-	var scores: Array = d.get("scores", [])
-	# Build the ranked BASE set (cosine order) + the score map for the Score column.
+	_apply_ranked_results(d.get("paths", []), d.get("scores", []))
+	_status_label.text = "Semantic results for \"%s\" — most relevant first (%d). Use Filter to narrow." % [
+		String(d.get("query", "")), _filtered.size()]
+
+
+# Make a ranked path list (semantic search OR find-similar) the current base set,
+# with the scores in the Score column, sorted best-first. Text/filters still narrow.
+func _apply_ranked_results(paths: Array, scores: Array) -> void:
 	_sem_ranked = []
 	_sem_scores = {}
 	for i in paths.size():
@@ -1835,8 +1868,6 @@ func _sem_finished() -> void:
 	_sort_col = COL_SCORE                       # sorted highest->lowest by default
 	_sort_asc = false
 	_apply()                                    # narrow by text/dropdowns, keep rank
-	_status_label.text = "Semantic results for \"%s\" — most relevant first (%d). Use Filter to narrow." % [
-		String(d.get("query", "")), _filtered.size()]
 
 
 # ----- "Update semantic index": embed files with no vector yet (embed.py) -----
@@ -1889,6 +1920,104 @@ func _emb_finished() -> void:
 			n = int(d.get("analysed", 0))
 	_status_label.text = "Semantic index updated — %d new file%s embedded." % [
 		n, "" if n == 1 else "s"]
+
+
+# ----- "Update fingerprints": acoustic fingerprints for content-based search ----
+func _update_fingerprints() -> void:
+	if _fp_busy:
+		return
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/fingerprint.py").simplify_path()
+	if FileAccess.file_exists(_fp_progress_path):
+		DirAccess.remove_absolute(_fp_progress_path)
+	_fp_busy = true
+	_fp_btn.disabled = true
+	_fp_btn.text = "Scanning for new files…"
+	_fp_thread = Thread.new()
+	_fp_thread.start(_fp_run.bind(script, _fp_progress_path))
+	_fp_poll.start()
+
+
+func _fp_run(script: String, progress: String) -> void:
+	var output: Array = []
+	var args := [script, "--only-missing", "--progress", progress]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_fp_finished")
+
+
+func _fp_tick() -> void:
+	if FileAccess.file_exists(_fp_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_fp_progress_path))
+		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
+			_fp_btn.text = "Fingerprinting %d / %d…" % [
+				int(d.get("analysed", 0)), int(d.get("total", 0))]
+
+
+func _fp_finished() -> void:
+	_fp_poll.stop()
+	if _fp_thread:
+		_fp_thread.wait_to_finish()
+		_fp_thread = null
+	_fp_busy = false
+	_fp_btn.disabled = false
+	_fp_btn.text = "Update fingerprints"
+	var n := 0
+	if FileAccess.file_exists(_fp_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_fp_progress_path))
+		if typeof(d) == TYPE_DICTIONARY:
+			n = int(d.get("analysed", 0))
+	_status_label.text = "Fingerprints updated — %d new file%s. Right-click a file → Find similar." % [
+		n, "" if n == 1 else "s"]
+
+
+# ----- "Find similar": rank the library by how close a file SOUNDS to _ctx_rec ---
+func _find_similar(rec: Dictionary) -> void:
+	if _similar_busy:
+		return
+	if String(rec.get("ext", "")).to_lower() != "wav":
+		_status_label.text = "Find similar works on WAV files (convert first)."
+		return
+	if FileAccess.file_exists(_similar_result_path):
+		DirAccess.remove_absolute(_similar_result_path)
+	var script := ProjectSettings.globalize_path("res://").path_join(
+		"../indexer/similar.py").simplify_path()
+	_similar_busy = true
+	_status_label.text = "Finding sounds similar to %s …" % String(rec.get("filename", ""))
+	_similar_thread = Thread.new()
+	_similar_thread.start(_similar_run.bind(script, String(rec.get("path", "")), _similar_result_path))
+
+
+func _similar_run(script: String, rel: String, out: String) -> void:
+	var output: Array = []
+	var args := [script, rel, out, "500"]
+	var code := OS.execute("py", args, output, true)
+	if code == -1:
+		OS.execute("python", args, output, true)
+	call_deferred("_similar_finished")
+
+
+func _similar_finished() -> void:
+	_similar_busy = false
+	if _similar_thread:
+		_similar_thread.wait_to_finish()
+		_similar_thread = null
+	if not FileAccess.file_exists(_similar_result_path):
+		_status_label.text = "Find similar failed (no output). Is python on PATH?"
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_similar_result_path))
+	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
+		var err := String(d.get("error", "?")) if typeof(d) == TYPE_DICTIONARY else "?"
+		if err.begins_with("no fingerprints") or err.begins_with("query not"):
+			_status_label.text = "Build fingerprints first: click 'Update fingerprints'."
+		else:
+			_status_label.text = "Find similar error: %s" % err
+		return
+	_sem_edit.text = ""                            # this is a sound-similarity result set
+	_apply_ranked_results(d.get("paths", []), d.get("scores", []))
+	_status_label.text = "Sounds most similar to %s (%d). Score = acoustic similarity; Filter narrows." % [
+		String(d.get("query", "")).get_file(), _filtered.size()]
 
 
 func _sort_value(rec: Dictionary, col: int) -> Variant:
@@ -3727,6 +3856,8 @@ func _on_ctx_menu(id: int) -> void:
 				_convert_to_wav(_ctx_rec, "")
 		7:                                          # delete (uses the current selection)
 			_confirm_delete_selected()
+		8:                                          # content-based similarity search
+			_find_similar(_ctx_rec)
 
 
 # Run a ctx action on _ctx_rec. Non-WAV sources (mp3/…) are decoded to a sibling
@@ -4185,6 +4316,10 @@ func _exit_tree() -> void:
 		_reindex_thread.wait_to_finish()
 	if _pa_thread and _pa_thread.is_started():
 		_pa_thread.wait_to_finish()
+	if _fp_thread and _fp_thread.is_started():
+		_fp_thread.wait_to_finish()
+	if _similar_thread and _similar_thread.is_started():
+		_similar_thread.wait_to_finish()
 
 
 func _an_finished() -> void:
