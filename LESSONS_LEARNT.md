@@ -9,6 +9,20 @@ channel count, so `str(rec["bit_depth"])` printed "24.0" in the table.
 JSON has no int/float distinction on parse — everything numeric is a float.)
 Cost: a wrong-looking column on the first screenshot.
 
+## Godot `JSON.stringify` writes raw control chars — invalid for strict parsers
+A WAV `bext` description contained a raw `\x13` (DC3). Python's `json.dumps` escapes
+it to ``, so index.py's output was valid. But the app's `_save_index` (added
+for delete-persist) re-serialised via **`JSON.stringify`, which emits control chars
+(< 0x20) RAW**, producing an index.json that Godot's own lenient parser reads back
+fine but **Python's strict `json.loads` rejects** ("Invalid control character").
+Symptom: the app looked normal, but `analyse_audio.py` (which `json.loads` the
+index) silently failed for the whole run, so a file's loudness never filled in.
+**Fixes:** (1) strip control chars at the source — `index.py` sanitises bext
+descriptions; (2) `_save_index` scrubs control chars from strings before
+`JSON.stringify`. Lesson: never assume a JSON string round-trips across two
+libraries — Godot↔Python disagree on control-char escaping. Cost: a confusing
+"analyse didn't update the table" report that looked like a loudness bug.
+
 ## Godot Tree right-click is dead unless `allow_rmb_select = true`
 `Tree.item_mouse_selected(pos, button_index)` — the signal you hook for a row
 context menu (and it's the ONLY place you learn which mouse button was used) — is

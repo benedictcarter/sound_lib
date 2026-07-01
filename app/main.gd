@@ -450,6 +450,8 @@ var _convert_then: String = ""         # ctx action to run once the decode lands
 var _confirm_dialog: ConfirmationDialog  # Del -> yes/no delete-to-Recycle-Bin
 var _delete_pending: Array = []          # records awaiting delete confirmation
 var _index_generated: String = ""        # preserved index.json "generated" stamp
+var _info_dialog: AcceptDialog            # simple summary popup (renames, etc.)
+var _sg_renames_path: String = ""         # analyse job's invalid-name rename report
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
 var _loop_spec_path: String = ""
@@ -575,6 +577,7 @@ func _ready() -> void:
 	_loop_result_path = ProjectSettings.globalize_path("user://loop_result.json")
 	_sl_result_path = ProjectSettings.globalize_path("user://suggest_loop.json")
 	_convert_result_path = ProjectSettings.globalize_path("user://to_wav_result.json")
+	_sg_renames_path = ProjectSettings.globalize_path("user://analyse_renames.json")
 	_sem_result_path = ProjectSettings.globalize_path("user://search_result.json")
 	_emb_path = data_dir.path_join("embeddings.npz")
 	_emb_progress_path = ProjectSettings.globalize_path("user://embed_progress.json")
@@ -838,6 +841,9 @@ func _build_ui() -> void:
 	_confirm_dialog.get_cancel_button().text = "No"
 	_confirm_dialog.confirmed.connect(_do_delete_confirmed)
 	add_child(_confirm_dialog)
+
+	_info_dialog = AcceptDialog.new()              # summaries (e.g. files renamed)
+	add_child(_info_dialog)
 
 	_build_num_popup()
 
@@ -1353,7 +1359,7 @@ func _build_analyser(root: VBoxContainer) -> void:
 	chopbar.add_child(sug)
 
 	_chop_btn = Button.new()
-	_chop_btn.text = "Chop to files"
+	_chop_btn.text = "Make chops"                   # aligns under 'Make loop'
 	_chop_btn.custom_minimum_size = Vector2(100, 0)
 	_chop_btn.tooltip_text = "Write each piece as name_chopped_NNN.wav next to the " \
 		+ "original (the original is KEPT). Re-run the indexer to see them."
@@ -3065,7 +3071,7 @@ func _suggest_missing_chops() -> void:
 
 func _sg_run(script: String, progress: String) -> void:
 	var output: Array = []
-	var args := [script, "--only-missing", "--progress", progress]
+	var args := [script, "--only-missing", "--progress", progress, "--renames", _sg_renames_path]
 	var code := OS.execute("py", args, output, true)
 	if code == -1:                       # py launcher not found; try python
 		OS.execute("python", args, output, true)
@@ -3101,6 +3107,31 @@ func _sg_finished() -> void:
 	var extra := "  (%d level'd rows updated)" % applied if applied > 0 else ""
 	_an_status.text = "Audio analysis complete: %d file%s (chops + loudness).%s" % [
 		analysed, "" if analysed == 1 else "s", extra]
+	_report_renames()                          # if the job renamed invalid-named files
+
+
+# If the analyse job renamed files with invalid characters, reload the path-keyed
+# stores (they were migrated on disk) and summarise the renames in a dialog.
+func _report_renames() -> void:
+	if not FileAccess.file_exists(_sg_renames_path):
+		return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_renames_path))
+	if typeof(d) != TYPE_ARRAY or d.is_empty():
+		return
+	_load_index()                              # picks up renamed paths (rebuilds view)
+	_load_userdata()
+	_load_chopping()
+	_load_loudness()
+	_apply()
+	var lines := "Renamed %d file%s with invalid characters:\n" % [d.size(), "" if d.size() == 1 else "s"]
+	var shown := mini(d.size(), 15)
+	for i in shown:
+		lines += "\n• %s\n    → %s" % [String(d[i].get("old", "")).get_file(), String(d[i].get("new", "")).get_file()]
+	if d.size() > shown:
+		lines += "\n…and %d more" % (d.size() - shown)
+	_info_dialog.title = "Files renamed"
+	_info_dialog.dialog_text = lines
+	_info_dialog.popup_centered()
 
 
 # Re-read chopping.json from disk and repaint the chop cells of visible rows
@@ -3572,6 +3603,15 @@ func _do_delete_confirmed() -> void:
 func _save_index() -> void:
 	if _library_root == "":
 		return
+	# Godot's JSON.stringify does NOT escape raw control chars (< 0x20); a stray one
+	# in a bext description (e.g. \x13) would make index.json invalid for strict
+	# parsers (Python's json, so analyse_audio.py). Scrub descriptions before write.
+	var ctrl := RegEx.new()
+	ctrl.compile("[\\x00-\\x1f]")
+	for r in _all:
+		var d: Variant = r.get("description")
+		if typeof(d) == TYPE_STRING and ctrl.search(d) != null:
+			r["description"] = ctrl.sub(d, " ", true).strip_edges()
 	var out := {
 		"library_root": _library_root,
 		"generated": _index_generated,

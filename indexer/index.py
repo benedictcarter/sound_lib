@@ -32,6 +32,16 @@ from pathlib import Path
 
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a"}
 
+# bext descriptions occasionally embed raw control chars (e.g. \x13). Left in, they
+# become invalid JSON when a non-escaping writer (Godot's JSON.stringify) rewrites
+# index.json, which then breaks strict parsers (Python json). Strip them at source.
+import re as _re
+_CTRL_RE = _re.compile(r"[\x00-\x1f]")
+
+
+def _clean_text(s: str) -> str:
+    return _CTRL_RE.sub(" ", s).strip()
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "library.cfg"
 # Index is written where the Godot app can load it via res://index.json
@@ -84,7 +94,7 @@ def parse_wav(path: Path) -> dict:
                     # BWF: first 256 bytes = ASCII Description, null padded
                     desc = bext[:256].split(b"\x00", 1)[0]
                     try:
-                        info["description"] = desc.decode("ascii", "ignore").strip()
+                        info["description"] = _clean_text(desc.decode("ascii", "ignore"))
                     except Exception:
                         pass
                     if csize % 2:
