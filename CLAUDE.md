@@ -15,8 +15,30 @@ for non-obvious gotchas.
 - **Top library row**: "Choose library folder" (`_on_choose_library` -> FileDialog
   dir picker -> writes `library.cfg`, rewires the userdata/chopping/loudness paths,
   then re-indexes in a thread `_reindex_library`/`_reindex_finished` and reloads) +
-  "Analyse Audio" (`_sg_btn`, moved here from the Chops row) + the library path +
-  status. The row right-click's "Open folder" (`_on_reveal`) handles a single track.
+  "Rescan library" (`_rescan_btn`, runs the whole update pipeline — see below) + the
+  library path + status. The row right-click's "Open folder" (`_on_reveal`) handles a
+  single track.
+- **"Rescan library" = the ONE end-to-end update pipeline** (`_start_rescan` ->
+  `_build_pipeline`/`_pipe_advance`/`_pipe_run`/`_pipe_step_finished`/`_pipe_all_done`,
+  polled by `_rescan_tick`). Runs these steps SEQUENTIALLY, each in a Thread so the app
+  stays usable, each incremental (`--only-missing`): `index.py --progress` (rescan) ->
+  `analyse_audio.py` (chops+loudness, `--renames`) -> `fingerprint.py` -> `embed.py` ->
+  `clap_embed.py` (appended ONLY if `_clap_model_present()` = models/clap/onnx/
+  audio_model.onnx exists). Fires at startup (`call_deferred` in `_ready`) AND on the
+  Rescan button. The button shows per-step progress ("Updating i/N: <label> M/K"); each
+  script writes its own progress file (`index.py`'s `_write_progress` -> `{scanned,new,
+  done,changed}`; the rest -> `{analysed,total}`). `_pipe_all_done` reloads chopping/
+  loudness always, and the full `_load_index` (re-selecting the prior row) ONLY if the
+  index step reported `changed`, then `_recompute_targets` + `_report_renames`, and
+  drains `_pa_pending` (chops/loops queued mid-run). All jobs run through `_exec_tool`
+  (so they work in the frozen standalone too — the old Analyse-Audio button used raw
+  `py`, which was broken there). The separate **Update semantic index / Update
+  fingerprints / Build CLAP index / Analyse Audio buttons were REMOVED** — folded into
+  this pipeline. **Download CLAP stays** (one-time model fetch; Rescan then builds the
+  CLAP index). Guards vs `_reindex_library` (both write index.json non-atomically);
+  `_on_choose_library` defers if the pipeline is mid-flight (`_pipe_busy`). index step
+  is fast (header-only, ~1 s incremental on 7k files); analyse/fingerprint/CLAP read
+  audio so a fresh library fills in over minutes.
 - **Non-WAV audio (mp3/ogg/flac/aiff…)**: the app is WAV-centric (Godot playback +
   in-memory PCM slicing for chop/loop/preview). `index.parse_audio` reads non-WAV
   tech metadata via soundfile (so the row shows duration/rate/ch; bit_depth None for
@@ -122,6 +144,11 @@ for non-obvious gotchas.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
   shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
   dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.
+  **Directory** column (`COL_DIRECTORY`, index 1, after Filename) = the file's full
+  ABSOLUTE directory (`_directory_of` = `_abs_path` minus the filename); read-only,
+  sortable, text-filterable (`STRING_FILTER_COLS`), tooltip = full path. Adding it
+  renumbered every COL_* after Filename — all refs use the named constants + the
+  parallel `COL_TITLES`/`COL_FIELD`/`COL_DEFAULT_W` arrays, so keep those aligned.
 - **Row right-click menu** (`_ctx_menu`, opened from `_on_tree_mouse_selected` on a
   RIGHT-click of any non-Rating cell — Rating right-click still clears the rating):
   Open folder (`_on_reveal`), Copy path (`DisplayServer.clipboard_set`), Suggest
@@ -155,8 +182,8 @@ for non-obvious gotchas.
   extracts a ~48-dim acoustic feature vector per file (MFCC mean/std + spectral
   centroid/bandwidth/rolloff + ZCR + RMS; resampled to 22050 for comparability,
   no big model — just soundfile+numpy+scipy) -> `fingerprints.npz` in the LIBRARY
-  ROOT. Incremental `--only-missing` (+`--progress`); app "Update fingerprints"
-  button (`_fp_*`, mirrors Update semantic index). Right-click a row -> **Find
+  ROOT. Incremental `--only-missing` (+`--progress`); built as a step of the Rescan
+  pipeline (no separate button). Right-click a row -> **Find
   similar sounds** runs `indexer/similar.py "<rel>" <out> 500` (`_find_similar`/
   `_similar_finished`): standardises (z-score) the fingerprints, ranks by euclidean
   distance to the query, returns paths + a 0..1 similarity score. Results REUSE the
@@ -174,8 +201,9 @@ for non-obvious gotchas.
   build (CUDA/`DmlExecutionProvider`) then CPU — DirectML gives GPU accel on any DX12
   card with zero CUDA setup (`onnxruntime-directml`). `similar.py` auto-prefers
   `clap.npz` (cosine) over `fingerprints.npz`, so **Find similar upgrades to CLAP**
-  transparently once built. App: **Download CLAP** (`_clap_dl_*` -> `--download`) +
-  **Build CLAP index** (`_clapidx_*` -> `--only-missing`). Deps in
+  transparently once built. App: **Download CLAP** button (`_clap_dl_*` ->
+  `--download`); the CLAP index (`--only-missing`) is then built as the last step of
+  the Rescan pipeline (no separate Build button). Deps in
   `requirements-clap.txt` (onnxruntime[+gpu/directml], transformers, huggingface_hub —
   no torch). Throughput: `_extract_mel` is VECTORISED (strided frames + one batched
   rfft; releases the GIL, ~2x the audio_utils Python loop, bit-identical ~4e-6), the
@@ -207,9 +235,9 @@ for non-obvious gotchas.
   scores. `_sem_finished` builds the ranked BASE set `_sem_ranked` + `_sem_scores`;
   the text **Filter** then narrows that base (`_apply` iterates `_sem_ranked` when
   `_sem_active`, keeping cosine rank — no column sort). The **Score** column
-  (`COL_SCORE`, read-only) shows cosine; default sort is Score desc. "Update index"
-  button (`_update_embeddings`/`_emb_*`) runs `embed.py --only-missing` threaded
-  with progress. `_by_path` maps rel_path->record. ~1.1s/query (model load each
+  (`COL_SCORE`, read-only) shows cosine; default sort is Score desc. The embeddings
+  are built by `embed.py --only-missing` as a step of the Rescan pipeline (no separate
+  Update-index button). `_by_path` maps rel_path->record. ~1.1s/query (model load each
   call; fine on Enter, no daemon).
 - Godot tooling: `S:\code\godot\Godot_v4.6.3-stable_win64_console.exe` (console
   build prints to stdout — use for headless validation).

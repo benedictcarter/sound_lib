@@ -261,9 +261,22 @@ def load_config() -> Path:
     return root
 
 
+def _write_progress(path, scanned, new, done, changed=False):
+    """Emit incremental scan progress for the app's poller (M scanned, N new)."""
+    if not path:
+        return
+    try:
+        Path(path).write_text(json.dumps({
+            "scanned": scanned, "new": new, "done": done, "changed": changed,
+        }), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="ignore cache, re-parse all")
+    ap.add_argument("--progress", default=None, help="write scan progress JSON here")
     args = ap.parse_args()
 
     root = load_config()
@@ -328,6 +341,11 @@ def main() -> None:
 
         if n % 500 == 0:
             print(f"  {n} files ({parsed} parsed, {reused} reused)...")
+            _write_progress(args.progress, n, parsed, False)
+
+    # Did anything change vs the cached index? (new/modified files, or removals =
+    # cached paths no longer present). Lets the app skip a reload when nothing moved.
+    changed = parsed > 0 or len(records) != len(cache)
 
     records.sort(key=lambda r: r["path"].lower())
     out = {
@@ -348,6 +366,7 @@ def main() -> None:
     )
     print(f"Wrote {OUTPUT_PATH} "
           f"({OUTPUT_PATH.stat().st_size/1e6:.1f} MB)")
+    _write_progress(args.progress, n, parsed, True, changed)
 
 
 if __name__ == "__main__":

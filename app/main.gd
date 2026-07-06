@@ -5,38 +5,39 @@ extends Control
 
 # ----- column layout -------------------------------------------------------
 const COL_FILENAME := 0
-const COL_SCORE := 1    # semantic-search cosine similarity (read-only; blank otherwise)
-const COL_LIBRARY := 2
-const COL_SUPPLIER := 3
-const COL_BUNDLE := 4
-const COL_DURATION := 5
-const COL_RATE := 6
-const COL_BIT := 7
-const COL_CH := 8
-const COL_SIZE := 9
-const COL_RATING := 10  # user data (userdata.json)
-const COL_PLAYS := 11   # user data (auto-incremented on finished playback)
-const COL_CHOP_DB := 12 # suggested/edited chop silence threshold (chopping.json)
-const COL_CHOP_GAP := 13 # suggested/edited chop min-gap seconds (chopping.json)
-const COL_CHOP_SND := 14 # suggested/edited chop min-sound seconds (chopping.json)
-const COL_CHOP_N := 15  # resulting chop pieces at those settings (chopping.json)
-const COL_TAGS := 16    # user data (your own keywords; editable inline)
-const COL_LEVEL := 17   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
-const COL_LOUDNESS := 18 # measured integrated loudness "orig dB", LUFS (loudness.json; read-only)
-const COL_GAIN_DB := 19 # user data: per-track applied playback gain in dB
-const COL_FINAL_DB := 20 # read-only: resulting loudness = orig dB + Gain dB
-const COL_COUNT := 21
+const COL_DIRECTORY := 1 # full directory path (excludes the filename); derived from "path"
+const COL_SCORE := 2    # semantic-search cosine similarity (read-only; blank otherwise)
+const COL_LIBRARY := 3
+const COL_SUPPLIER := 4
+const COL_BUNDLE := 5
+const COL_DURATION := 6
+const COL_RATE := 7
+const COL_BIT := 8
+const COL_CH := 9
+const COL_SIZE := 10
+const COL_RATING := 11  # user data (userdata.json)
+const COL_PLAYS := 12   # user data (auto-incremented on finished playback)
+const COL_CHOP_DB := 13 # suggested/edited chop silence threshold (chopping.json)
+const COL_CHOP_GAP := 14 # suggested/edited chop min-gap seconds (chopping.json)
+const COL_CHOP_SND := 15 # suggested/edited chop min-sound seconds (chopping.json)
+const COL_CHOP_N := 16  # resulting chop pieces at those settings (chopping.json)
+const COL_TAGS := 17    # user data (your own keywords; editable inline)
+const COL_LEVEL := 18   # user data: desired loudness on a 0-10 perceptual scale; -> Gain dB
+const COL_LOUDNESS := 19 # measured integrated loudness "orig dB", LUFS (loudness.json; read-only)
+const COL_GAIN_DB := 20 # user data: per-track applied playback gain in dB
+const COL_FINAL_DB := 21 # read-only: resulting loudness = orig dB + Gain dB
+const COL_COUNT := 22
 
 const COL_TITLES := [
-	"Filename", "Score", "Library", "Supplier", "Bundle",
+	"Filename", "Directory", "Score", "Library", "Supplier", "Bundle",
 	"Duration", "Rate", "Bit", "Ch", "Size", "Rating", "Plays",
 	"Chop dB", "Chop gap", "Min snd", "Chop pieces", "Tags",
 	"tgt vol/Level", "orig dB", "Gain dB", "final dB",
 ]
-# Which record field each column sorts/reads. Score, Bundle, Rating, Plays,
-# Chop dB/gap/snd/pieces, Tags, Level, orig dB, Gain dB and final dB are special-cased.
+# Which record field each column sorts/reads. Directory, Score, Bundle, Rating,
+# Plays, Chop dB/gap/snd/pieces, Tags, Level, orig dB, Gain dB, final dB are special-cased.
 const COL_FIELD := [
-	"filename", "", "library", "supplier", "bundle",
+	"filename", "", "", "library", "supplier", "bundle",
 	"duration", "sample_rate", "bit_depth", "channels", "size", "", "", "", "", "", "", "", "", "", "", "",
 ]
 const NUMERIC_COLS := [COL_SCORE, COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE,
@@ -78,11 +79,11 @@ const HELP_TEXT := "[b]Sound Library — what everything does[/b]
 
 [b]Library[/b]
 • [b]Choose library folder[/b] (top-left): pick the folder holding your sounds. It updates library.cfg, re-indexes that folder and reloads. The current path + index date show next to it.
-• [b]Analyse Audio[/b]: for every file not analysed yet, reads its audio once and fills the [i]orig dB[/i] / [i]final dB[/i] (loudness) and [i]Chop[/i] columns. New chops/loops you make are auto-analysed on their own.
+• [b]Rescan library[/b]: updates EVERYTHING end-to-end (index → audio analysis → fingerprints → semantic index → CLAP index if downloaded). Runs automatically at startup and in the background; click it any time you've added/moved files. New chops/loops you make are auto-analysed on their own.
 
 [b]Searching & filtering[/b]
 • [b]Semantic search[/b] (first search line): describe a sound in words and press Enter. Ranks by the MEANING of the text (filename/description/library), not word-match — a small local model. Clearing the box (or its ✕) unsearches.
-• [b]CLAP sound search[/b] (second search line): describe a sound and press Enter — ranks by the actual SOUND (e.g. \"creepy metallic scrape\" finds files that sound like that, whatever they're named). Needs Download CLAP → Build CLAP index. The two search boxes are exclusive; the [i]Score[/i] column shows the match on either.
+• [b]CLAP sound search[/b] (second search line): describe a sound and press Enter — ranks by the actual SOUND (e.g. \"creepy metallic scrape\" finds files that sound like that, whatever they're named). Needs Download CLAP, then Rescan library (it builds the CLAP index). The two search boxes are exclusive; the [i]Score[/i] column shows the match on either.
 • [b]Filter[/b] box: quick text filter over filename / library / supplier / description / tags (space = AND). It narrows the semantic results too.
 • [b]Per-column filters[/b] (row above the table): text box, tick-boxes, or a min–max range depending on the column. [b]Clear filters[/b] resets everything (and the semantic box).
 • [b]Sort[/b]: click a column header (again to reverse).
@@ -117,16 +118,12 @@ Open folder · Copy path · [b]Find similar sounds[/b] · Suggest loop / chops (
 [b]Three ways to find a sound[/b]
 • [b]Semantic[/b] (words → text): search line 1 — matches the meaning of the metadata.
 • [b]CLAP[/b] (words → sound): search line 2 — matches the actual audio. Needs CLAP built.
-• [b]Find similar[/b] (sound → sound): right-click a file → ranks the library by how it SOUNDS. Uses [b]Update fingerprints[/b] (tiny, no extra deps) or CLAP if built (much stronger, auto-preferred).
-[i]CLAP setup:[/i] click [b]Download CLAP[/b] → [b]Build CLAP index[/b]. In the standalone build it's ready to go; on the source build first run pip install -r indexer/requirements-clap.txt. Uses your GPU if onnxruntime-directml/-gpu is installed.
+• [b]Find similar[/b] (sound → sound): right-click a file → ranks the library by how it SOUNDS. Uses the fingerprints built by Rescan (tiny, no extra deps) or CLAP if downloaded (much stronger, auto-preferred).
+[i]CLAP setup:[/i] click [b]Download CLAP[/b], then [b]Rescan library[/b] (its last step builds the CLAP index). In the standalone build it's ready to go; on the source build first run pip install -r indexer/requirements-clap.txt. Uses your GPU if onnxruntime-directml/-gpu is installed.
 
-[b]The index buttons (search-bar rows) — run once, incremental after[/b]
-• [b]Update semantic index[/b]: embeds each file's TEXT (name/description) so Semantic search works. Fast; re-run after adding files.
-• [b]Update fingerprints[/b]: builds a tiny per-file acoustic fingerprint (reads the audio) so right-click → Find similar works with no extra install.
-• [b]Download CLAP[/b]: fetches the optional CLAP model (ONNX, no PyTorch) — enables the CLAP sound-search box and a much stronger Find similar.
-• [b]Build CLAP index[/b]: embeds every file's audio with CLAP (uses your GPU) so CLAP search + Find similar use it. Do it after Download CLAP.
-• [b]Analyse Audio[/b] (top row): fills the loudness (orig/final dB) + Chop columns.
-Each only processes files it hasn't done yet, so re-running is cheap.
+[b]Keeping everything up to date — one button[/b]
+• [b]Rescan library[/b] (top row) does it ALL, in order, in the background: rescans the folder (index), analyses audio (loudness + Chop columns), builds acoustic fingerprints (Find similar), the semantic index (Semantic search), and the CLAP index (CLAP search / stronger Find similar — only if you've clicked Download CLAP). It runs automatically at startup too. Every step is incremental (only new/changed files), so re-running is cheap.
+• [b]Download CLAP[/b]: one-time — fetches the optional CLAP model (ONNX, no PyTorch). After it, Rescan builds the CLAP index.
 
 [b]Delete[/b]
 Select rows and press [b]Del[/b] (or right-click → Delete) → confirm → moves them to the Recycle Bin (recoverable).
@@ -136,7 +133,7 @@ One list of the library's keywords; the [b]Filter / Semantic / CLAP[/b] radio at
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 56, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
+const COL_DEFAULT_W := [460, 360, 56, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -500,12 +497,7 @@ var _an_thread: Thread = null
 var _an_busy: bool = false
 var _an_out_path: String = ""
 
-# bulk "suggest missing chops" job (runs suggest_chops.py over files lacking a
-# chopping.json entry, in a thread, with a polled progress file)
-var _sg_thread: Thread = null
-var _sg_busy: bool = false
-var _sg_btn: Button
-var _sg_poll: Timer
+# analyse-audio (chops + loudness) progress file — a step in the update pipeline
 var _sg_progress_path: String = ""
 
 # chop-to-disk job (chop.py writes name_chopped_NNN next to the original; the
@@ -555,6 +547,15 @@ var _sg_renames_path: String = ""         # analyse job's invalid-name rename re
 var _lib_picker: FileDialog               # "Choose library folder" directory picker
 var _reindex_thread: Thread = null        # re-index after changing the library folder
 var _reindex_busy: bool = false
+var _rescan_btn: Button                   # "Rescan library" -> runs the whole pipeline
+var _rescan_poll: Timer                   # polls the current pipeline step's progress
+var _rescan_progress_path: String = ""    # index.py step's progress file
+# End-to-end update pipeline (index -> analyse -> fingerprints -> embeddings -> CLAP)
+var _pipe_steps: Array = []
+var _pipe_i: int = -1
+var _pipe_busy: bool = false
+var _pipe_thread: Thread = null
+var _pipe_index_changed: bool = false
 var _pa_thread: Thread = null             # targeted analyse of new chops/loops
 var _pa_busy: bool = false
 var _pa_paths_file: String = ""
@@ -579,17 +580,9 @@ var _clap_search_busy: bool = false
 var _clap_search_result_path: String = ""
 var _by_path: Dictionary = {}         # rel_path -> record, for fast rank lookup
 
-# embeddings.npz (beside the audio) + the "Update semantic index" job
+# embeddings.npz / fingerprints.npz progress files — steps in the update pipeline
 var _emb_path: String = ""
-var _emb_thread: Thread = null
-var _emb_busy: bool = false
-var _emb_btn: Button
-var _emb_poll: Timer
 var _emb_progress_path: String = ""
-var _fp_thread: Thread = null            # build audio fingerprints (content-based search)
-var _fp_busy: bool = false
-var _fp_btn: Button
-var _fp_poll: Timer
 var _fp_progress_path: String = ""
 var _similar_thread: Thread = null       # "Find similar" query
 var _similar_busy: bool = false
@@ -598,11 +591,7 @@ var _clap_dl_thread: Thread = null       # optional CLAP model download
 var _clap_dl_busy: bool = false
 var _clap_dl_btn: Button
 var _clap_dl_result_path: String = ""
-var _clapidx_thread: Thread = null       # optional CLAP audio index build
-var _clapidx_busy: bool = false
-var _clapidx_btn: Button
-var _clapidx_poll: Timer
-var _clapidx_progress_path: String = ""
+var _clapidx_progress_path: String = ""  # CLAP audio-index step of the update pipeline
 
 # persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
 var _prefs: Dictionary = {}
@@ -724,6 +713,7 @@ func _ready() -> void:
 	_similar_result_path = ProjectSettings.globalize_path("user://similar_result.json")
 	_clap_dl_result_path = ProjectSettings.globalize_path("user://clap_download.json")
 	_clapidx_progress_path = ProjectSettings.globalize_path("user://clap_progress.json")
+	_rescan_progress_path = ProjectSettings.globalize_path("user://rescan_progress.json")
 	# So the indexer scripts / frozen tool.exe resolve app/index.json + library.cfg
 	# from the app's own location (globalize res://.. = the repo/dist root).
 	OS.set_environment("SOUNDLIB_REPO", _repo_root())
@@ -733,6 +723,7 @@ func _ready() -> void:
 	_build_ui()
 	_load_index()
 	_apply_view_prefs()
+	call_deferred("_start_rescan")              # pick up files added since last run (background)
 
 
 # Open at half the screen AREA (≈71% on each axis), keeping the screen's aspect
@@ -888,13 +879,15 @@ func _build_ui() -> void:
 	libbtn.pressed.connect(_on_choose_library)
 	barlib.add_child(libbtn)
 
-	_sg_btn = Button.new()
-	_sg_btn.text = "Analyse Audio"
-	_sg_btn.tooltip_text = "For every file not analysed yet, read its audio once and " \
-		+ "compute BOTH the chop suggestion and the loudness (fills the Chop, orig dB " \
-		+ "and final dB columns). Slow on a fresh library; columns fill in as it runs."
-	_sg_btn.pressed.connect(_suggest_missing_chops)
-	barlib.add_child(_sg_btn)
+	_rescan_btn = Button.new()
+	_rescan_btn.text = "Rescan library"
+	_rescan_btn.tooltip_text = "Update EVERYTHING end-to-end: rescan the folder for " \
+		+ "added/changed/removed files, then analyse audio (chops + loudness), build " \
+		+ "fingerprints, the semantic index, and the CLAP index (if downloaded). All " \
+		+ "incremental and in the background — runs at startup too; click any time " \
+		+ "you've moved files in."
+	_rescan_btn.pressed.connect(_start_rescan)
+	barlib.add_child(_rescan_btn)
 
 	_lib_label = Label.new()                       # the library-root path
 	_lib_label.clip_text = true
@@ -913,21 +906,6 @@ func _build_ui() -> void:
 	bar0.add_theme_constant_override("separation", 8)
 	root.add_child(bar0)
 
-	_emb_btn = Button.new()
-	_emb_btn.text = "Update semantic index"
-	_emb_btn.tooltip_text = "Embed any files that don't have a semantic vector yet " \
-		+ "(e.g. new chops). Run once before first use; quick afterwards."
-	_emb_btn.pressed.connect(_update_embeddings)
-	bar0.add_child(_emb_btn)
-
-	_fp_btn = Button.new()
-	_fp_btn.text = "Update fingerprints"
-	_fp_btn.tooltip_text = "Build the tiny acoustic fingerprint for any file that lacks " \
-		+ "one (reads its audio). Powers right-click → Find similar when CLAP isn't built. " \
-		+ "Slow on a fresh library; incremental after."
-	_fp_btn.pressed.connect(_update_fingerprints)
-	bar0.add_child(_fp_btn)
-
 	_sem_edit = LineEdit.new()
 	_sem_edit.placeholder_text = "Semantic (words): describe a sound — \"guns shooting\" — Enter. Matches the MEANING of the text."
 	_sem_edit.clear_button_enabled = true
@@ -945,21 +923,14 @@ func _build_ui() -> void:
 	_clap_dl_btn.text = "Download CLAP"
 	_clap_dl_btn.tooltip_text = "Download the CLAP model (~120 MB audio + ~500 MB text; " \
 		+ "ONNX, no PyTorch) → enables the CLAP sound-search box + a much stronger Find " \
-		+ "similar. In the standalone build the code is bundled — just click this, then " \
-		+ "Build CLAP index. (Source build: pip install -r indexer/requirements-clap.txt first.)"
+		+ "similar. In the standalone the code is bundled — just click this, then Rescan " \
+		+ "library (it builds the CLAP index as its last step). (Source build: pip install " \
+		+ "-r indexer/requirements-clap.txt first.)"
 	_clap_dl_btn.pressed.connect(_download_clap)
 	barclap.add_child(_clap_dl_btn)
 
-	_clapidx_btn = Button.new()
-	_clapidx_btn.text = "Build CLAP index"
-	_clapidx_btn.tooltip_text = "After Download CLAP: embed every file's audio with the " \
-		+ "ONNX model (uses your GPU if available) → clap.npz. Needed for CLAP sound " \
-		+ "search + Find similar (auto-uses CLAP over the fingerprints)."
-	_clapidx_btn.pressed.connect(_build_clap_index)
-	barclap.add_child(_clapidx_btn)
-
 	_clap_edit = LineEdit.new()
-	_clap_edit.placeholder_text = "CLAP (by sound): describe it — \"creepy metallic scrape\" — Enter. Matches the actual SOUND. (needs Build CLAP index)"
+	_clap_edit.placeholder_text = "CLAP (by sound): describe it — \"creepy metallic scrape\" — Enter. Matches the actual SOUND. (needs Download CLAP + Rescan)"
 	_clap_edit.clear_button_enabled = true
 	_clap_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_clap_edit.text_submitted.connect(_on_clap_submitted)
@@ -1105,27 +1076,11 @@ func _build_ui() -> void:
 	_an_debounce.timeout.connect(_auto_analyse)
 	add_child(_an_debounce)
 
-	# poll the bulk chop-suggest job's progress file while it runs
-	_sg_poll = Timer.new()
-	_sg_poll.wait_time = 1.0
-	_sg_poll.timeout.connect(_sg_tick)
-	add_child(_sg_poll)
-
-	# poll the embeddings job's progress file while it runs
-	_emb_poll = Timer.new()
-	_emb_poll.wait_time = 1.0
-	_emb_poll.timeout.connect(_emb_tick)
-	add_child(_emb_poll)
-
-	_fp_poll = Timer.new()
-	_fp_poll.wait_time = 1.0
-	_fp_poll.timeout.connect(_fp_tick)
-	add_child(_fp_poll)
-
-	_clapidx_poll = Timer.new()
-	_clapidx_poll.wait_time = 1.0
-	_clapidx_poll.timeout.connect(_clapidx_tick)
-	add_child(_clapidx_poll)
+	# poll the current update-pipeline step's progress file while it runs
+	_rescan_poll = Timer.new()
+	_rescan_poll.wait_time = 0.5
+	_rescan_poll.timeout.connect(_rescan_tick)
+	add_child(_rescan_poll)
 
 	_to16_poll = Timer.new()
 	_to16_poll.wait_time = 0.5
@@ -1147,6 +1102,7 @@ func _build_ui() -> void:
 func _filter_string_value(rec: Dictionary, col: int) -> String:
 	match col:
 		COL_FILENAME: return String(rec.get("filename", ""))
+		COL_DIRECTORY: return _directory_of(rec)
 		COL_LIBRARY: return String(rec.get("library", ""))
 		COL_SUPPLIER: return String(rec.get("supplier", ""))
 		COL_BUNDLE: return String(rec.get("bundle", ""))
@@ -1154,7 +1110,15 @@ func _filter_string_value(rec: Dictionary, col: int) -> String:
 	return ""
 
 
-const STRING_FILTER_COLS := [COL_FILENAME, COL_LIBRARY, COL_SUPPLIER, COL_BUNDLE, COL_TAGS]
+# The full directory holding this file (its absolute path minus the filename) — the
+# value shown in the Directory column and used to sort/filter it.
+func _directory_of(rec: Dictionary) -> String:
+	var full := _abs_path(rec)
+	var slash := full.rfind("/")
+	return full.substr(0, slash) if slash > 0 else full
+
+
+const STRING_FILTER_COLS := [COL_FILENAME, COL_DIRECTORY, COL_LIBRARY, COL_SUPPLIER, COL_BUNDLE, COL_TAGS]
 
 
 func _distinct_values(col: int) -> Array:
@@ -1898,7 +1862,7 @@ func _run_clap_search(query: String) -> void:
 	if _clap_search_busy:
 		return
 	if not FileAccess.file_exists(_library_root.path_join("clap.npz")):
-		_status_label.text = "CLAP sound search needs the index — click 'Build CLAP index' first."
+		_status_label.text = "CLAP sound search needs the index — Download CLAP, then Rescan library."
 		return
 	if FileAccess.file_exists(_clap_search_result_path):
 		DirAccess.remove_absolute(_clap_search_result_path)
@@ -1929,7 +1893,7 @@ func _clap_search_finished() -> void:
 	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
 		var err := String(d.get("error", "?")) if typeof(d) == TYPE_DICTIONARY else "?"
 		if err == "no clap index":
-			_status_label.text = "CLAP sound search needs the index — click 'Build CLAP index' first."
+			_status_label.text = "CLAP sound search needs the index — Download CLAP, then Rescan library."
 		elif err == "no text model":
 			_status_label.text = "CLAP text model missing — click 'Download CLAP'."
 		elif err == "deps":
@@ -2066,105 +2030,7 @@ func _apply_ranked_results(paths: Array, scores: Array) -> void:
 	_apply()                                    # narrow by text/dropdowns, keep rank
 
 
-# ----- "Update semantic index": embed files with no vector yet (embed.py) -----
-func _update_embeddings() -> void:
-	if _emb_busy:
-		return
-	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/embed.py").simplify_path()
-	if FileAccess.file_exists(_emb_progress_path):
-		DirAccess.remove_absolute(_emb_progress_path)
-	_emb_busy = true
-	_emb_btn.disabled = true
-	_emb_btn.text = "Scanning for new files…"        # progress shows on the button
-	_emb_thread = Thread.new()
-	_emb_thread.start(_emb_run.bind(script, _emb_progress_path))
-	_emb_poll.start()
-
-
-func _emb_run(script: String, progress: String) -> void:
-	var output: Array = []
-	var args := [script, "--only-missing", "--progress", progress]
-	_exec_tool(args, output)
-	call_deferred("_emb_finished")
-
-
-func _emb_tick() -> void:
-	# until the progress file exists with a total we're still scanning -> the button
-	# keeps "Scanning for new files…"; then it shows done / new.
-	if FileAccess.file_exists(_emb_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
-		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
-			_emb_btn.text = "Embedding %d / %d new…" % [
-				int(d.get("analysed", 0)), int(d.get("total", 0))]
-
-
-func _emb_finished() -> void:
-	_emb_poll.stop()
-	if _emb_thread:
-		_emb_thread.wait_to_finish()
-		_emb_thread = null
-	_emb_busy = false
-	_emb_btn.disabled = false
-	_emb_btn.text = "Update semantic index"          # restore the idle label
-	var n := 0
-	if FileAccess.file_exists(_emb_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_emb_progress_path))
-		if typeof(d) == TYPE_DICTIONARY:
-			n = int(d.get("analysed", 0))
-	_status_label.text = "Semantic index updated — %d new file%s embedded." % [
-		n, "" if n == 1 else "s"]
-
-
-# ----- "Update fingerprints": acoustic fingerprints for content-based search ----
-func _update_fingerprints() -> void:
-	if _fp_busy:
-		return
-	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/fingerprint.py").simplify_path()
-	if FileAccess.file_exists(_fp_progress_path):
-		DirAccess.remove_absolute(_fp_progress_path)
-	_fp_busy = true
-	_fp_btn.disabled = true
-	_fp_btn.text = "Scanning for new files…"
-	_fp_thread = Thread.new()
-	_fp_thread.start(_fp_run.bind(script, _fp_progress_path))
-	_fp_poll.start()
-
-
-func _fp_run(script: String, progress: String) -> void:
-	var output: Array = []
-	var args := [script, "--only-missing", "--progress", progress]
-	_exec_tool(args, output)
-	call_deferred("_fp_finished")
-
-
-func _fp_tick() -> void:
-	if FileAccess.file_exists(_fp_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_fp_progress_path))
-		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
-			_fp_btn.text = "Fingerprinting %d / %d…" % [
-				int(d.get("analysed", 0)), int(d.get("total", 0))]
-
-
-func _fp_finished() -> void:
-	_fp_poll.stop()
-	if _fp_thread:
-		_fp_thread.wait_to_finish()
-		_fp_thread = null
-	_fp_busy = false
-	_fp_btn.disabled = false
-	_fp_btn.text = "Update fingerprints"
-	var n := 0
-	if FileAccess.file_exists(_fp_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_fp_progress_path))
-		if typeof(d) == TYPE_DICTIONARY:
-			n = int(d.get("analysed", 0))
-	_status_label.text = "Fingerprints updated — %d new file%s. Right-click a file → Find similar." % [
-		n, "" if n == 1 else "s"]
-
-
-# ----- optional CLAP: download the model, then build the audio index ------------
+# ----- optional CLAP: download the model (building its index is part of Rescan) -
 func _download_clap() -> void:
 	if _clap_dl_busy:
 		return
@@ -2200,53 +2066,7 @@ func _clap_dl_finished() -> void:
 		if typeof(d) == TYPE_DICTIONARY:
 			ok = bool(d.get("ok", false))
 			err = String(d.get("error", err))
-	_status_label.text = "CLAP model downloaded — now click 'Build CLAP index'." if ok else ("Download CLAP failed: " + err)
-
-
-func _build_clap_index() -> void:
-	if _clapidx_busy:
-		return
-	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/clap_embed.py").simplify_path()
-	if FileAccess.file_exists(_clapidx_progress_path):
-		DirAccess.remove_absolute(_clapidx_progress_path)
-	_clapidx_busy = true
-	_clapidx_btn.disabled = true
-	_clapidx_btn.text = "Scanning…"
-	_clapidx_thread = Thread.new()
-	_clapidx_thread.start(_clapidx_run.bind(script, _clapidx_progress_path))
-	_clapidx_poll.start()
-
-
-func _clapidx_run(script: String, progress: String) -> void:
-	var output: Array = []
-	var args := [script, "--only-missing", "--progress", progress]
-	_exec_tool(args, output)
-	call_deferred("_clapidx_finished")
-
-
-func _clapidx_tick() -> void:
-	if FileAccess.file_exists(_clapidx_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clapidx_progress_path))
-		if typeof(d) == TYPE_DICTIONARY and int(d.get("total", 0)) > 0:
-			_clapidx_btn.text = "CLAP %d / %d…" % [int(d.get("analysed", 0)), int(d.get("total", 0))]
-
-
-func _clapidx_finished() -> void:
-	_clapidx_poll.stop()
-	if _clapidx_thread:
-		_clapidx_thread.wait_to_finish()
-		_clapidx_thread = null
-	_clapidx_busy = false
-	_clapidx_btn.disabled = false
-	_clapidx_btn.text = "Build CLAP index"
-	var n := 0
-	if FileAccess.file_exists(_clapidx_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_clapidx_progress_path))
-		if typeof(d) == TYPE_DICTIONARY:
-			n = int(d.get("analysed", 0))
-	_status_label.text = "CLAP index updated — %d file%s. Find similar now uses CLAP." % [
-		n, "" if n == 1 else "s"]
+	_status_label.text = "CLAP model downloaded — click 'Rescan library' to build the CLAP index." if ok else ("Download CLAP failed: " + err)
 
 
 # ----- bulk "Convert to 16-bit": a 16-bit copy of every selected higher-bit file -
@@ -2387,7 +2207,7 @@ func _similar_finished() -> void:
 	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
 		var err := String(d.get("error", "?")) if typeof(d) == TYPE_DICTIONARY else "?"
 		if err.begins_with("no fingerprints") or err.begins_with("query not"):
-			_status_label.text = "Build fingerprints first: click 'Update fingerprints'."
+			_status_label.text = "No fingerprints yet — click 'Rescan library' to build them."
 		else:
 			_status_label.text = "Find similar error: %s" % err
 		return
@@ -2399,6 +2219,8 @@ func _similar_finished() -> void:
 
 func _sort_value(rec: Dictionary, col: int) -> Variant:
 	# Rating/Plays come from user data; everything else from the record.
+	if col == COL_DIRECTORY:
+		return _directory_of(rec)
 	if col == COL_SCORE:
 		return float(_sem_scores.get(String(rec.get("path", "")), -1.0))
 	if col == COL_RATING:
@@ -2479,6 +2301,9 @@ func _populate_tree() -> void:
 		var odd := (i & 1) == 1                     # zebra: shade every other row
 		var it := _tree.create_item(root)
 		it.set_text(COL_FILENAME, String(rec.get("filename", "")))
+		var dir := _directory_of(rec)
+		it.set_text(COL_DIRECTORY, dir)
+		it.set_tooltip_text(COL_DIRECTORY, dir)     # full path clips in the cell; hover to read
 		it.set_text(COL_LIBRARY, String(rec.get("library", "")))
 		it.set_text(COL_SUPPLIER, String(rec.get("supplier", "")))
 		it.set_text(COL_BUNDLE, _short_bundle(String(rec.get("bundle", ""))))
@@ -3149,6 +2974,9 @@ func _on_reveal() -> void:
 func _on_choose_library() -> void:
 	if _reindex_busy:
 		return
+	if _pipe_busy:                              # both write index.json — don't collide
+		_status_label.text = "A background update is running — try again in a moment."
+		return
 	if _lib_picker == null:
 		_lib_picker = FileDialog.new()
 		_lib_picker.file_mode = FileDialog.FILE_MODE_OPEN_DIR
@@ -3213,6 +3041,149 @@ func _reindex_finished() -> void:
 	_load_chopping()
 	_load_loudness()
 	_load_index()                              # rebuilds the view + sets the status line
+
+
+# ---- Background "update everything" pipeline --------------------------------
+# One button (Rescan library) + startup run the whole chain in the background, one
+# step at a time, so the app stays usable: rescan the index -> analyse audio
+# (chops+loudness) -> fingerprints -> semantic embeddings -> CLAP index (only if the
+# model is downloaded). Each step is incremental (--only-missing), so an up-to-date
+# library finishes in seconds; a fresh one fills everything in over time.
+func _indexer_script(name: String) -> String:
+	return ProjectSettings.globalize_path("res://").path_join("../indexer/" + name).simplify_path()
+
+
+func _clap_model_present() -> bool:
+	return FileAccess.file_exists(_repo_root().path_join("models/clap/onnx/audio_model.onnx"))
+
+
+func _build_pipeline() -> Array:
+	var steps: Array = [
+		{"kind": "index", "label": "Scanning", "script": "index.py",
+			"progress": _rescan_progress_path,
+			"args": ["--progress", _rescan_progress_path]},
+		{"kind": "count", "label": "Analysing audio", "script": "analyse_audio.py",
+			"progress": _sg_progress_path,
+			"args": ["--only-missing", "--progress", _sg_progress_path, "--renames", _sg_renames_path]},
+		{"kind": "count", "label": "Fingerprints", "script": "fingerprint.py",
+			"progress": _fp_progress_path,
+			"args": ["--only-missing", "--progress", _fp_progress_path]},
+		{"kind": "count", "label": "Semantic index", "script": "embed.py",
+			"progress": _emb_progress_path,
+			"args": ["--only-missing", "--progress", _emb_progress_path]},
+	]
+	if _clap_model_present():
+		steps.append({"kind": "count", "label": "CLAP index", "script": "clap_embed.py",
+			"progress": _clapidx_progress_path,
+			"args": ["--only-missing", "--progress", _clapidx_progress_path]})
+	return steps
+
+
+# Entry point: the Rescan library button AND startup (call_deferred in _ready).
+func _start_rescan() -> void:
+	if _pipe_busy or _reindex_busy:
+		return                                  # a pipeline/reindex is already running
+	if not DirAccess.dir_exists_absolute(_library_root):
+		return                                  # no library configured yet
+	_pipe_steps = _build_pipeline()
+	_pipe_i = -1
+	_pipe_index_changed = false
+	_pipe_busy = true
+	_rescan_btn.disabled = true
+	_pipe_advance()
+
+
+func _pipe_advance() -> void:
+	_pipe_i += 1
+	if _pipe_i >= _pipe_steps.size():
+		_pipe_all_done()
+		return
+	var step: Dictionary = _pipe_steps[_pipe_i]
+	var prog := String(step.progress)
+	if prog != "" and FileAccess.file_exists(prog):
+		DirAccess.remove_absolute(prog)
+	_rescan_btn.text = _pipe_btn_text(step, {})
+	var args: Array = [_indexer_script(String(step.script))] + step.args
+	_pipe_thread = Thread.new()
+	_pipe_thread.start(_pipe_run.bind(args))
+	_rescan_poll.start()
+
+
+func _pipe_run(args: Array) -> void:
+	var output: Array = []
+	_exec_tool(args, output)
+	call_deferred("_pipe_step_finished")
+
+
+# Poll: show the current step's progress on the button. During the analyse step,
+# live-refresh the chop/loudness cells as they fill in.
+func _rescan_tick() -> void:
+	if _pipe_i < 0 or _pipe_i >= _pipe_steps.size():
+		return
+	var step: Dictionary = _pipe_steps[_pipe_i]
+	if String(step.label) == "Analysing audio":
+		_reload_chop_cells()
+		_reload_loudness_cells()
+	var d: Dictionary = {}
+	var prog := String(step.progress)
+	if prog != "" and FileAccess.file_exists(prog):
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(prog))
+		if typeof(parsed) == TYPE_DICTIONARY:
+			d = parsed
+	_rescan_btn.text = _pipe_btn_text(step, d)
+
+
+func _pipe_btn_text(step: Dictionary, d: Dictionary) -> String:
+	var phase := "%d/%d" % [_pipe_i + 1, _pipe_steps.size()]
+	if String(step.kind) == "index":
+		var scanned := int(d.get("scanned", 0))
+		if scanned <= 0:
+			return "Updating %s: scanning…" % phase
+		return "Updating %s: %d scanned, %d new" % [phase, scanned, int(d.get("new", 0))]
+	var tot := int(d.get("total", 0))
+	if tot > 0:
+		return "Updating %s: %s %d/%d" % [phase, String(step.label), int(d.get("analysed", 0)), tot]
+	return "Updating %s: %s…" % [phase, String(step.label)]
+
+
+func _pipe_step_finished() -> void:
+	_rescan_poll.stop()
+	if _pipe_thread:
+		_pipe_thread.wait_to_finish()
+		_pipe_thread = null
+	var step: Dictionary = _pipe_steps[_pipe_i]
+	if String(step.kind) == "index" and FileAccess.file_exists(_rescan_progress_path):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_rescan_progress_path))
+		if typeof(d) == TYPE_DICTIONARY and bool(d.get("changed", false)):
+			_pipe_index_changed = true
+	_pipe_advance()
+
+
+func _pipe_all_done() -> void:
+	_pipe_busy = false
+	_rescan_btn.disabled = false
+	_rescan_btn.text = "Rescan library"
+	# Reload what the UI shows: analysis sidecars always; the full index (new/removed
+	# rows) only if the scan changed it, keeping the user's selected row.
+	_load_chopping()
+	_load_loudness()
+	if _pipe_index_changed:
+		var sel_rec: Variant = _selected_rec()
+		var sel_path := String(sel_rec.get("path", "")) if typeof(sel_rec) == TYPE_DICTIONARY else ""
+		_load_index()
+		if sel_path != "" and _by_path.has(sel_path):
+			_select_row_by_path(sel_path)
+	else:
+		_reload_chop_cells()
+		_reload_loudness_cells()
+	_recompute_targets()                       # newly-measured level'd rows -> Gain dB
+	_report_renames()                          # if analyse renamed invalid-named files
+	_status_label.text = "Library up to date — index, analysis, fingerprints, semantics%s." % (
+		" + CLAP" if _clap_model_present() else "")
+	if not _pa_pending.is_empty():             # analyse chops/loops queued during the run
+		var next: Array = _pa_pending
+		_pa_pending = []
+		_analyse_paths(next)
 
 
 # Space toggles play/pause globally -- except while typing in a text field (the
@@ -3883,83 +3854,13 @@ func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
 	_apply_chop_cells(it, rec)
 
 
-# ----- bulk "suggest missing chops" (suggest_chops.py in a thread) ---------
-# One combined pass (chops + loudness) over files missing EITHER, reading each
-# file's audio once. Runs analyse_audio.py in a thread with live progress.
-func _suggest_missing_chops() -> void:
-	if _sg_busy:
-		return
-	var missing := 0
-	for rec in _all:
-		if String(rec.get("ext", "")).to_lower() != "wav":
-			continue
-		var p := String(rec.get("path", ""))
-		if not _chopping.has(p) or not _loudness.has(p):
-			missing += 1
-	if missing == 0:
-		_an_status.text = "Every file is already analysed (chops + loudness)."
-		return
-	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/analyse_audio.py").simplify_path()
-	if FileAccess.file_exists(_sg_progress_path):
-		DirAccess.remove_absolute(_sg_progress_path)
-	_sg_busy = true
-	_sg_btn.disabled = true
-	_an_status.text = "Analysing %d file%s (chops + loudness)… (reads their audio once)" % [
-		missing, "" if missing == 1 else "s"]
-	_sg_thread = Thread.new()
-	_sg_thread.start(_sg_run.bind(script, _sg_progress_path))
-	_sg_poll.start()
-
-
-func _sg_run(script: String, progress: String) -> void:
-	var output: Array = []
-	var args := [script, "--only-missing", "--progress", progress, "--renames", _sg_renames_path]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:                       # py launcher not found; try python
-		OS.execute("python", args, output, true)
-	call_deferred("_sg_finished")
-
-
-# Polled while the job runs: refresh chop + loudness cells from disk, update status.
-func _sg_tick() -> void:
-	_reload_chop_cells()
-	_reload_loudness_cells()
-	if FileAccess.file_exists(_sg_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_progress_path))
-		if typeof(d) == TYPE_DICTIONARY:
-			_an_status.text = "Analysing audio… %d / %d" % [
-				int(d.get("analysed", 0)), int(d.get("total", 0))]
-
-
-func _sg_finished() -> void:
-	_sg_poll.stop()
-	if _sg_thread:
-		_sg_thread.wait_to_finish()
-		_sg_thread = null
-	_sg_busy = false
-	_sg_btn.disabled = false
-	_reload_chop_cells()
-	_reload_loudness_cells()
-	var applied := _recompute_targets()        # newly-measured rows with a Level -> Gain dB
-	var analysed := 0
-	if FileAccess.file_exists(_sg_progress_path):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_sg_progress_path))
-		if typeof(d) == TYPE_DICTIONARY:
-			analysed = int(d.get("analysed", 0))
-	var extra := "  (%d level'd rows updated)" % applied if applied > 0 else ""
-	_an_status.text = "Audio analysis complete: %d file%s (chops + loudness).%s" % [
-		analysed, "" if analysed == 1 else "s", extra]
-	_report_renames()                          # if the job renamed invalid-named files
-
-
 # Analyse EXACTLY these files (chops + loudness) in a thread — used to auto-fill the
 # dB / Chop columns for freshly made chops/loops. Coalesces if one is already running.
 func _analyse_paths(paths: Array) -> void:
 	if paths.is_empty():
 		return
-	if _pa_busy or _sg_busy:
-		for p in paths:
+	if _pa_busy or _pipe_busy:                  # don't collide with the update pipeline's
+		for p in paths:                         # analyse step; _pipe_all_done drains these
 			if not _pa_pending.has(p):
 				_pa_pending.append(p)
 		return
@@ -4885,14 +4786,12 @@ func _exit_tree() -> void:
 		_save_chopping()                 # flush a pending coalesced write
 	if _an_thread and _an_thread.is_started():
 		_an_thread.wait_to_finish()
-	if _sg_thread and _sg_thread.is_started():
-		_sg_thread.wait_to_finish()
+	if _pipe_thread and _pipe_thread.is_started():
+		_pipe_thread.wait_to_finish()
 	if _chop_thread and _chop_thread.is_started():
 		_chop_thread.wait_to_finish()
 	if _sem_thread and _sem_thread.is_started():
 		_sem_thread.wait_to_finish()
-	if _emb_thread and _emb_thread.is_started():
-		_emb_thread.wait_to_finish()
 	if _convert_thread and _convert_thread.is_started():
 		_convert_thread.wait_to_finish()
 	if _sl_thread and _sl_thread.is_started():
@@ -4901,14 +4800,10 @@ func _exit_tree() -> void:
 		_reindex_thread.wait_to_finish()
 	if _pa_thread and _pa_thread.is_started():
 		_pa_thread.wait_to_finish()
-	if _fp_thread and _fp_thread.is_started():
-		_fp_thread.wait_to_finish()
 	if _similar_thread and _similar_thread.is_started():
 		_similar_thread.wait_to_finish()
 	if _clap_dl_thread and _clap_dl_thread.is_started():
 		_clap_dl_thread.wait_to_finish()
-	if _clapidx_thread and _clapidx_thread.is_started():
-		_clapidx_thread.wait_to_finish()
 	if _to16_thread and _to16_thread.is_started():
 		_to16_thread.wait_to_finish()
 	if _clap_search_thread and _clap_search_thread.is_started():
