@@ -147,3 +147,47 @@ and `seek()` past the `data` chunk (`csize` bytes, word-aligned to even). Only
 `fmt `, `bext`, and the `data` size are read. Result: full 7,000-file index in
 ~6.5 s. Remember RIFF chunks are 2-byte aligned — skip a pad byte when `csize` is
 odd or chunk parsing desyncs.
+
+## Godot Tree has no per-row border/highlight API — overlay a Control on top
+Wanting a "yellow border around the playing row", the Tree offers only
+`set_custom_bg_color` (a fill, per cell), no border. **Fix:** add a mouse-ignored
+`Control` child of the Tree, anchored full-rect, that in `_draw` queries
+`tree.get_item_area_rect(item)` (row rect, follows scroll) and draws a
+`draw_rect(..., filled=false, width=2)`. Drive it from `_process`: set the item,
+clip the top against the header height (`get_item_area_rect` y can slide UNDER the
+header when scrolled — clamp `top = maxf(rect.y, header_h)`), and `queue_redraw`
+each frame so it tracks scrolling. Because the overlay is a later child it draws
+ABOVE the Tree's own cell content. Guard with `is_instance_valid(item)` — the
+TreeItem is freed on every `_populate_tree` (re-filter/sort), so a stale ref must
+not crash. Cost: knowing Tree can't do borders at all before reaching for an overlay.
+
+## `--headless --editor` validation can MISS GDScript parse errors the game catches
+A `:=` type-inference error (`var loc := 0.0 if cond else (f - e[0])/span`, where
+`e[0]` is a Variant Array element so the type can't be inferred) passed a
+`Godot --headless --editor --quit-after 5 --path app` check with ZERO reported
+errors — then the EXPORT succeeded and shipped a broken exe that opened a blank
+window. Running the project instead (`Godot --path app --quit-after 150`) reported
+it immediately: "Parse Error: Cannot infer the type of 'local' variable ... Failed
+to load script res://main.gd". Mechanism: the editor import path parses/reports
+scripts differently (and may reuse a cached `.gdc`) from the runtime GDScript
+loader, so an `--editor` pass is NOT a substitute for actually loading the game.
+**Always validate a main.gd change by RUNNING the project, not just opening the
+editor headless.** And a clean export is NOT proof the script parses — the exe can
+still blank-window at load. Fix for the inference error itself: give the var an
+explicit type or `float()`-cast the Variant operands. Cost: shipped a blank-window
+exe to the user and needed a second round-trip.
+
+## Godot's runtime WAV loader rejects WAVE_FORMAT_EXTENSIBLE (not the bit depth)
+A 24-bit stereo WAV (`01_Campana_Iglesia.wav`) wouldn't play: `AudioStreamWAV.
+load_from_file` returned null with "Format not supported for WAVE file (not PCM)"
+(audio_stream_wav.cpp:737). The instinct — "Godot can't do 24-bit" — is WRONG:
+tested empirically, Godot 4.6 loads plain PCM_24 AND IEEE FLOAT fine (downconverts
+to FORMAT_16_BITS). What it CAN'T read is the WAVE_FORMAT_EXTENSIBLE container
+(compression tag 0xFFFE), which many 24-bit tools emit. So bit depth is NOT the
+discriminator (93% of this library is 24-bit and most plays), and you CAN'T tell
+EXTENSIBLE from the index (it only stores bit_depth) without re-reading each fmt
+chunk. **Fix:** don't pre-flag by bit depth (would red-tint 6,700 good files) —
+instead, on the ACTUAL `load_from_file` == null, decode that one file to a 16-bit
+sibling (`<stem>_16bit.wav`, via soundfile which reads EXTENSIBLE) and play that;
+reuse the sibling next time. Same on-demand pattern as the non-WAV mp3/ogg decode.
+Cost: chased "24-bit unsupported" before testing that plain 24-bit actually loads.

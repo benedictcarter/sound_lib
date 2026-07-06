@@ -52,6 +52,8 @@ const EDITABLE_COLS := [COL_RATING, COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND,
 const EDIT_CELL_BG := Color(1, 1, 1, 0.08)   # subtle lighter overlay on editable cells
 const ZEBRA_BG := Color(1, 1, 1, 0.035)      # odd-row stripe (easier to track a row)
 const EDIT_CELL_BG_ODD := Color(1, 1, 1, 0.115)  # editable cell on an odd (striped) row
+const UNSUPPORTED_BG := Color(0.80, 0.14, 0.14, 0.22)      # row the player can't play directly
+const UNSUPPORTED_BG_ODD := Color(0.80, 0.14, 0.14, 0.30)  # same, on an odd (striped) row
 
 # Tokens ignored by the keyword analysis: English filler + audio/file-format
 # noise (channel layouts, formats, mic patterns) that would otherwise dominate.
@@ -350,6 +352,28 @@ class ColGrabber extends Control:
 			Vector2(cx + 3.0, cy), Vector2(cx + 7.0, cy - 3.0), Vector2(cx + 7.0, cy + 3.0)]), c)
 
 
+## Yellow border drawn over the row whose track is currently playing. Sits on top
+## of the Tree (mouse-ignored) and re-queries the row rect each frame so it follows
+## scrolling. `item` is set from _playing_item; cleared when nothing is playing.
+class RowHighlight extends Control:
+	var tree: Tree
+	var item: TreeItem = null
+	var header_h := 0.0
+
+	func _draw() -> void:
+		if item == null or not is_instance_valid(item) or tree == null:
+			return
+		var r := tree.get_item_area_rect(item)     # row rect in tree space (follows scroll)
+		if r.size.y <= 0.0:
+			return
+		var top := maxf(r.position.y, header_h)
+		var bottom := minf(r.position.y + r.size.y, size.y)
+		if bottom <= top:
+			return                                  # scrolled out of the visible band
+		draw_rect(Rect2(1.0, top, size.x - 2.0, bottom - top - 1.0),
+			Color(1.0, 0.82, 0.10), false, 2.0)
+
+
 ## Two-knob range slider for numeric column filters. Maps over the column's actual
 ## data min..max (optionally log scale for wide positive ranges); drag either knob.
 class RangeSlider extends Control:
@@ -490,6 +514,16 @@ var _chop_thread: Thread = null
 var _chop_busy: bool = false
 var _chop_btn: Button
 var _playing_chops: bool = false       # currently auditioning the chops/region preview
+# What the player is (or was last) loaded with: "track" | "loop" | "chops" | "".
+# Each transport row (Track/Loop/Chops) owns one kind; only one plays at a time.
+# Space toggles the LAST-USED row = this kind. (`_playing_chops` == kind in loop/chops.)
+var _play_kind: String = ""
+# Maps a chops/loop PREVIEW's timeline back onto the original file so the graph's
+# playhead can sweep the green region while a preview plays. Entries are
+# [prev_start_frac, prev_end_frac, orig_start_frac, orig_end_frac] (all 0..1);
+# `_preview_rec` is the file it was built from (guards against a stale overlay).
+var _preview_map: Array = []
+var _preview_rec: Variant = null
 var _chop_spec_path: String = ""
 var _chop_result_path: String = ""
 var _loop_thread: Thread = null
@@ -575,6 +609,7 @@ var _prefs: Dictionary = {}
 var _prefs_path: String = ""
 
 # ----- nodes ---------------------------------------------------------------
+var _row_hl: RowHighlight             # yellow border over the currently-playing row
 var _search: LineEdit
 var _lib_label: Label                 # library-root path shown top-left
 var _vol_slider: HSlider
@@ -609,7 +644,9 @@ var _keywords: Array = []   # [ [token, library_count], ... ] sorted desc
 
 # player
 var _player: AudioStreamPlayer
-var _play_btn: Button
+var _play_btn: Button                 # Track row play/pause
+var _loop_play_btn: Button            # Loop row play/pause
+var _chops_play_btn: Button           # Chops row play/pause
 var _time_label: Label
 var _now_label: Label
 var _stream_len: float = 0.0
@@ -992,6 +1029,13 @@ func _build_ui() -> void:
 	_filter_header.clip_contents = true
 	tablebox.add_child(_filter_header)
 	tablebox.add_child(_tree)
+	# yellow border over the row whose track is playing (mouse-ignored overlay on
+	# top of the Tree; positioned/redrawn each frame in _process to follow scroll)
+	_row_hl = RowHighlight.new()
+	_row_hl.tree = _tree
+	_row_hl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_row_hl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tree.add_child(_row_hl)
 	root.add_child(tablebox)
 
 	# Draggable resize grabbers (white ◄► strips). One per column edge, floated on
@@ -1478,7 +1522,8 @@ func _build_transport_row(root: VBoxContainer) -> void:
 	_play_btn = Button.new()
 	_play_btn.text = "Play Track"
 	_play_btn.custom_minimum_size = Vector2(100, 0)
-	_play_btn.pressed.connect(_on_play_pressed)
+	_play_btn.pressed.connect(_on_play_track_pressed)
+	_play_btn.tooltip_text = "Play the selected track. (Chops/loops play via their own buttons.)"
 	bar.add_child(_play_btn)
 
 	var stop := Button.new()
@@ -1549,13 +1594,13 @@ func _build_analyser(root: VBoxContainer) -> void:
 	root.add_child(loopbar)
 	loopbar.add_child(_group_label("Loop"))
 
-	var playloop := Button.new()
-	playloop.text = "Play Loop"
-	playloop.custom_minimum_size = Vector2(100, 0)
-	playloop.tooltip_text = "Audition the selected region as a seamless crossfaded " \
+	_loop_play_btn = Button.new()
+	_loop_play_btn.text = "Play Loop"
+	_loop_play_btn.custom_minimum_size = Vector2(100, 0)
+	_loop_play_btn.tooltip_text = "Audition the selected region as a seamless crossfaded " \
 		+ "loop (turns Crossfade + Loop on). Suggest loop or drag a region first."
-	playloop.pressed.connect(_on_play_loop)
-	loopbar.add_child(playloop)
+	_loop_play_btn.pressed.connect(_on_play_loop)
+	loopbar.add_child(_loop_play_btn)
 
 	_suggest_loop_btn = Button.new()
 	_suggest_loop_btn.text = "Suggest loop"
@@ -1601,13 +1646,13 @@ func _build_analyser(root: VBoxContainer) -> void:
 	root.add_child(chopbar)
 	chopbar.add_child(_group_label("Chops"))
 
-	var playchops := Button.new()
-	playchops.text = "Play chops"
-	playchops.custom_minimum_size = Vector2(100, 0)
-	playchops.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
+	_chops_play_btn = Button.new()
+	_chops_play_btn.text = "Play chops"
+	_chops_play_btn.custom_minimum_size = Vector2(100, 0)
+	_chops_play_btn.tooltip_text = "Play each chop piece in turn with 1 s of silence " \
 		+ "between them, so the boundaries are audibly obvious."
-	playchops.pressed.connect(_play_chops)
-	chopbar.add_child(playchops)
+	_chops_play_btn.pressed.connect(_on_play_chops_btn)
+	chopbar.add_child(_chops_play_btn)
 
 	var sug := Button.new()
 	sug.text = "Suggest Chops"
@@ -2451,12 +2496,21 @@ func _populate_tree() -> void:
 				COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 				COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]:
 			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
-		# zebra stripe + editable-cell tint, in one pass over the columns
+		# row background: red if the player can't play it directly, else zebra
+		# stripe + editable-cell tint, in one pass over the columns
+		var playable := _is_playable(rec)
 		for c in range(COL_COUNT):
-			if EDITABLE_COLS.has(c):
+			if not playable:
+				it.set_custom_bg_color(c, UNSUPPORTED_BG_ODD if odd else UNSUPPORTED_BG)
+			elif EDITABLE_COLS.has(c):
 				it.set_custom_bg_color(c, EDIT_CELL_BG_ODD if odd else EDIT_CELL_BG)
 			elif odd:
 				it.set_custom_bg_color(c, ZEBRA_BG)
+		if not playable:
+			it.set_tooltip_text(COL_FILENAME,
+				"The player can't play this file directly (non-WAV format, or a WAV with " \
+				+ ">2 channels). Right-click -> Convert to WAV, or just press Play to decode " \
+				+ "and audition it.")
 		it.set_metadata(0, rec)
 	_count_label.text = "%d / %d files" % [_filtered.size(), _all.size()]
 
@@ -2512,6 +2566,19 @@ func _abs_path(rec: Dictionary) -> String:
 	return _library_root.path_join(String(rec.get("path", "")))
 
 
+# Can the player play this record directly? WAV (mono/stereo) and MP3 only; other
+# formats decode to a sibling WAV on demand. Non-playable rows are tinted red and,
+# on Play, auto-decoded. (Multichannel WAVs can't preview — see _play_selected.)
+func _is_playable(rec: Dictionary) -> bool:
+	var ext := String(rec.get("ext", "")).to_lower()
+	if ext == "mp3":
+		return true
+	if ext == "wav":
+		var ch := int(rec.get("channels")) if rec.get("channels") != null else 0
+		return ch <= 2
+	return false
+
+
 func _on_row_selected() -> void:
 	# Selection change updates the rating buttons and (debounced) auto-analyses
 	# the row so its sound/dead-space picture shows without pressing Analyse.
@@ -2565,10 +2632,14 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 	if col == COL_TAGS or col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND \
 			or col == COL_LEVEL or col == COL_GAIN_DB:
 		return                                 # let the inline editor handle it
-	# Don't autoplay while Shift/Ctrl-extending a selection range.
+	# Don't autoplay / stop while Shift/Ctrl-extending a selection range.
 	var ranging := Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_CTRL)
-	if mouse_btn == MOUSE_BUTTON_LEFT and _autoplay.button_pressed and not ranging:
-		_play_selected()
+	if mouse_btn == MOUSE_BUTTON_LEFT and not ranging:
+		if _autoplay.button_pressed:
+			_play_selected()                       # autoplay: the new track replaces the old
+		elif rec != _playing_rec and (_player.playing or _player.stream_paused):
+			_on_stop_pressed()                     # clicking a DIFFERENT row stops the old
+			                                       # track/preview (don't leave it playing)
 
 
 func _on_tree_item_edited() -> void:
@@ -2889,14 +2960,26 @@ func _play_selected() -> void:
 		_apply_volume()
 		_player.play()
 		_playing_chops = false
+		_play_kind = "track"
 		_stream_len = mp3.get_length()
 		_playing_rec = rec
 		_playing_item = _tree.get_selected()
-		_play_btn.text = "Pause"
+		_update_play_btn()
 		_now_label.text = "Playing (mp3):  %s" % String(rec.get("filename", ""))
 		return
 	if ext != "wav":
-		_now_label.text = "Preview supports WAV only (this is .%s):  %s" % [ext, abs]
+		# not directly playable — reuse the decoded sibling WAV if it exists, else
+		# decode it (indexer/to_wav.py) and play the result when that finishes.
+		var wrec: Variant = _sibling_wav_rec(rec)
+		if typeof(wrec) == TYPE_DICTIONARY:
+			_select_row_by_path(String(wrec.get("path", "")))
+			_play_selected()
+			return
+		if _convert_busy:
+			_now_label.text = "Decoding another file… try Play again in a moment."
+			return
+		_now_label.text = "Decoding %s to WAV to play…" % String(rec.get("filename", ""))
+		_convert_to_wav(rec, "__play__")
 		return
 	if not FileAccess.file_exists(abs):
 		_now_label.text = "File not found (library moved?): %s" % abs
@@ -2908,7 +2991,21 @@ func _play_selected() -> void:
 		return
 	var stream: AudioStreamWAV = AudioStreamWAV.load_from_file(abs)
 	if stream == null:
-		_now_label.text = "Could not load WAV (unsupported format — e.g. float, or too large): %s" % abs
+		# Godot's runtime WAV loader can't read this file — almost always
+		# WAVE_FORMAT_EXTENSIBLE (common for 24-bit). soundfile CAN, so make a 16-bit
+		# sibling (<stem>_16bit.wav) and play that. Reuse one if it already exists.
+		if String(rec.get("path", "")).ends_with("_16bit.wav"):
+			_now_label.text = "Could not load WAV (unsupported format): %s" % abs
+			return
+		var s16: Variant = _sibling_16bit_rec(rec)
+		if typeof(s16) == TYPE_DICTIONARY:
+			_select_row_by_path(String(s16.get("path", "")))
+			_play_selected()
+			return
+		if _convert_busy:
+			_now_label.text = "Converting another file… try Play again in a moment."
+			return
+		_convert_to_16bit(rec, "__play__")     # sets status; plays the 16-bit copy when done
 		return
 	_set_stream_loop(stream)                   # honour the Loop toggle
 	_player.stream = stream
@@ -2916,32 +3013,66 @@ func _play_selected() -> void:
 	_apply_volume()
 	_player.play()
 	_playing_chops = false                     # this is a whole-file play, not a region
+	_play_kind = "track"
 	_stream_len = stream.get_length()
 	_playing_rec = rec
 	_playing_item = _tree.get_selected()
-	_play_btn.text = "Pause"
+	_update_play_btn()
 	_now_label.text = "Playing:  %s" % String(rec.get("filename", ""))
 
 
+# Each of the three transport rows (Track / Loop / Chops) owns one play button and
+# reflects ONLY its own kind: "Pause X" if that kind is the one currently playing,
+# else "Play X". Only one kind plays at a time, so at most one shows "Pause".
+func _update_play_btn() -> void:
+	var playing := _player.playing
+	_play_btn.text = "Pause Track" if (playing and _play_kind == "track") else "Play Track"
+	_loop_play_btn.text = "Pause Loop" if (playing and _play_kind == "loop") else "Play Loop"
+	_chops_play_btn.text = "Pause chops" if (playing and _play_kind == "chops") else "Play chops"
+
+
+# Toggle pause/resume of whatever is currently loaded (Space, and the active row's
+# button when its kind is the one loaded). Never STARTS a different kind.
+func _toggle_pause() -> void:
+	if _player.stream == null:
+		return
+	if _player.playing:
+		_player.stream_paused = true
+	elif _player.stream_paused:
+		_player.stream_paused = false
+	else:
+		_player.play()                             # stopped/finished -> replay this stream
+	_update_play_btn()
+
+
+# True when the player is actively playing or paused (not stopped/finished) — used
+# so a row's play button pauses/resumes only a LIVE stream, else starts fresh.
+func _is_active() -> bool:
+	return _player.playing or _player.stream_paused
+
+
+# Track row's play button: pause/resume if THIS track is what's live, else start
+# the selected track (which supersedes any loop/chops preview).
+func _on_play_track_pressed() -> void:
+	var rec: Variant = _selected_rec()
+	if _play_kind == "track" and rec != null and rec == _playing_rec and _is_active():
+		_toggle_pause()
+	else:
+		_play_selected()
+
+
+# Kept for callers/back-compat: Space routes here. Toggle the last-used row's state.
 func _on_play_pressed() -> void:
 	if _player.stream == null:
 		_play_selected()
 		return
-	if _player.playing:
-		_player.stream_paused = true
-		_play_btn.text = "Play Track"
-	elif _player.stream_paused:
-		_player.stream_paused = false
-		_play_btn.text = "Pause"
-	else:
-		_player.play()
-		_play_btn.text = "Pause"
+	_toggle_pause()
 
 
 func _on_stop_pressed() -> void:
 	_player.stop()
 	_playing_chops = false                     # stop ends the region/chops audition
-	_play_btn.text = "Play Track"
+	_update_play_btn()
 	_time_label.text = "0:00 / 0:00"
 
 
@@ -2954,7 +3085,7 @@ func _on_graph_seek(fraction: float) -> void:
 	_player.seek(clampf(fraction, 0.0, 1.0) * _stream_len)
 	if not _player.playing and not _player.stream_paused:
 		_player.play()
-	_play_btn.text = "Pause"
+	_update_play_btn()
 
 
 func _on_volume_changed(v: float) -> void:
@@ -3110,30 +3241,48 @@ func _process(_delta: float) -> void:
 			_resize_col = -1
 	_layout_filter_header()                        # keep filters aligned over columns
 	# playback cursor + play dot on the visualiser, when the loaded file is the one
-	# shown in the analyser (playing OR paused).
+	# shown in the analyser (playing OR paused). For a chops/loop PREVIEW the player
+	# is on a different timeline, so map its position back onto the original file.
 	if _graph and not _an_levels.is_empty():
 		var ph := -1.0
-		if _player.stream != null and _playing_rec != null and _playing_rec == _an_rec and _stream_len > 0.0:
-			ph = clampf(_player.get_playback_position() / _stream_len, 0.0, 1.0)
+		if _player.stream != null and _stream_len > 0.0:
+			var f := clampf(_player.get_playback_position() / _stream_len, 0.0, 1.0)
+			if _playing_rec != null and _playing_rec == _an_rec:
+				ph = f                                 # whole-track: preview == file timeline
+			elif _playing_chops and _preview_rec == _an_rec and not _preview_map.is_empty():
+				ph = _preview_frac_to_orig(f)          # loop/chops: map back to the file
 		if ph != _graph.playhead:
 			_graph.playhead = ph
 			_graph.queue_redraw()
 			if _seekbar:
 				_seekbar.pos = ph
 				_seekbar.queue_redraw()
+	# yellow border on the playing row (track playback only, not chops/loop preview)
+	if _row_hl:
+		var playing_now := _player.stream != null and (_player.playing or _player.stream_paused)
+		var target: TreeItem = _playing_item if (playing_now and not _playing_chops) else null
+		_row_hl.header_h = _header_height()
+		if _row_hl.item != target:
+			_row_hl.item = target
+			_row_hl.queue_redraw()
+		elif target != null:
+			_row_hl.queue_redraw()                 # follow scrolling
 	if _player.stream == null or _stream_len <= 0.0:
 		return
 	if _player.playing:
 		var pos := _player.get_playback_position()
 		_time_label.text = "%s / %s" % [_fmt_time(pos), _fmt_time(_stream_len)]
-	if not _player.playing and not _player.stream_paused and _play_btn.text == "Pause":
-		_play_btn.text = "Play Track"  # finished
+	# finished (not paused) but a row still shows "Pause X" -> reset all to "Play X"
+	if not _is_active() and (_play_btn.text.begins_with("Pause") \
+			or _loop_play_btn.text.begins_with("Pause") \
+			or _chops_play_btn.text.begins_with("Pause")):
+		_update_play_btn()
 
 
 func _on_playback_finished() -> void:
 	# Fired only when the stream plays through to the end (not on Stop) -- i.e.
 	# the user finished listening. Count it.
-	_play_btn.text = "Play Track"
+	_update_play_btn()
 	if _playing_rec == null:
 		return
 	var key := String(_playing_rec.get("path", ""))
@@ -3929,16 +4078,30 @@ func _reload_loudness_cells() -> void:
 
 
 # ----- play chops: each piece + 1 s of silence, as a single preview stream ---
-# "Play Loop": audition the selected region as a seamless crossfaded loop.
+# Loop row's play button: pause/resume if a LOOP is what's loaded, else start a
+# fresh loop preview of the selected region (seamless crossfade).
 func _on_play_loop() -> void:
+	if _play_kind == "loop" and _is_active():
+		_toggle_pause()
+		return
 	if _xfade_chk:
 		_xfade_chk.button_pressed = true       # crossfade preview
 	if _loop_chk:
 		_loop_chk.button_pressed = true         # loop so the seam is audible
-	_play_chops()
+	_play_chops("loop")
 
 
-func _play_chops() -> void:
+# Chops row's play button: pause/resume if CHOPS are what's live, else start them.
+func _on_play_chops_btn() -> void:
+	if _play_kind == "chops" and _is_active():
+		_toggle_pause()
+		return
+	_play_chops("chops")
+
+
+# `kind` labels the preview's owning row ("loop" or "chops"); "" keeps the current
+# kind (internal re-previews: region re-drag, suggest auto-preview).
+func _play_chops(kind := "") -> void:
 	if typeof(_an_rec) != TYPE_DICTIONARY or _effective_segments().is_empty():
 		_an_status.text = "Analyse a file (or drag a region) first — no chops to play."
 		return
@@ -3960,11 +4123,15 @@ func _play_chops() -> void:
 	_apply_volume()
 	_player.play()
 	_playing_chops = true                      # so re-selecting a region rebuilds this
+	_preview_rec = _an_rec                      # the file this preview's playhead maps onto
+	if kind == "":                             # internal re-preview keeps the current row
+		kind = _play_kind if _play_kind in ["loop", "chops"] else "chops"
+	_play_kind = kind
+	var npieces := _effective_segments().size()    # WYSIWYG: the GREEN pieces actually played
 	_stream_len = preview.get_length()
 	_playing_rec = null          # preview timeline != original; skip cursor + play-count
 	_playing_item = null
-	_play_btn.text = "Pause"
-	var npieces := _effective_segments().size()    # WYSIWYG: the GREEN pieces actually played
+	_update_play_btn()
 	var fn := String(_an_rec.get("filename", ""))
 	var xfade_on: bool = _xfade_chk and _xfade_chk.button_pressed and npieces == 1
 	if xfade_on:
@@ -3999,6 +4166,8 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 	silence.resize(int(sr) * frame_bytes)        # 1 s of zeros (= silence, signed PCM)
 	var out := PackedByteArray()
 	var first := true
+	var cum := 0                                   # running sample offset into the preview
+	var map_entries: Array = []                    # [prev_start_samp, prev_end_samp, a, b]
 	for s in segs:
 		var a := clampi(int(round(float(s[0]) * _an_frame_s * sr)), 0, total)
 		var b := clampi(int(round(float(s[1]) * _an_frame_s * sr)), 0, total)
@@ -4006,10 +4175,14 @@ func _build_chops_stream(stream: AudioStreamWAV) -> AudioStreamWAV:
 			continue
 		if not first:
 			out.append_array(silence)              # 1 s BETWEEN pieces only — no
+			cum += int(sr)
+		map_entries.append([cum, cum + (b - a), a, b])
 		out.append_array(data.slice(a * frame_bytes, b * frame_bytes))
+		cum += b - a
 		first = false                              # leading/trailing pad, so a single
 	if out.is_empty():                             # region loops seamlessly (no gap)
 		return null
+	_set_preview_map(map_entries, out.size() / frame_bytes, total)
 	var sw := AudioStreamWAV.new()
 	sw.format = stream.format
 	sw.mix_rate = sr
@@ -4054,6 +4227,10 @@ func _build_xfade_loop_stream(stream: AudioStreamWAV, seg: Array, bps: int, ch: 
 	out.append_array(data.slice((a + L) * frame_bytes, (a + n - L) * frame_bytes))
 	if out.is_empty():
 		return null
+	# preview frame j maps to original frame a+j (the whole crossfaded loop covers
+	# original samples [a, a + (n-L)) — i.e. the region minus the crossfade tail)
+	var ptot := out.size() / frame_bytes
+	_set_preview_map([[0, ptot, a, a + ptot]], ptot, total)
 	var sw := AudioStreamWAV.new()
 	sw.format = stream.format
 	sw.mix_rate = sr
@@ -4099,6 +4276,33 @@ func _effective_segments() -> Array:
 		var n := _an_levels.size()
 		return [[lo * n, hi * n]]
 	return _graph.segments
+
+
+# Store the preview->original timeline map, normalising raw sample offsets to 0..1
+# fractions (see `_preview_map`). Called from the two preview builders.
+func _set_preview_map(entries: Array, prev_total: int, orig_total: int) -> void:
+	_preview_map.clear()
+	if prev_total <= 0 or orig_total <= 0:
+		return
+	for e in entries:
+		_preview_map.append([
+			float(e[0]) / prev_total, float(e[1]) / prev_total,
+			float(e[2]) / orig_total, float(e[3]) / orig_total])
+
+
+# Map a fraction along the PREVIEW (0..1) to the matching fraction of the ORIGINAL
+# file, so the graph playhead tracks the green region. Returns -1 in a silence gap
+# between chops (cursor hidden there).
+func _preview_frac_to_orig(f: float) -> float:
+	for e in _preview_map:
+		var p0 := float(e[0])
+		var p1 := float(e[1])
+		if f >= p0 and f <= p1:
+			var span := p1 - p0
+			var loc := 0.0 if span <= 0.0 else (f - p0) / span
+			var o0 := float(e[2])
+			return clampf(o0 + loc * (float(e[3]) - o0), 0.0, 1.0)
+	return -1.0
 
 
 # ----- chop to files: chop.py writes name_chopped_NNN.wav beside the original --
@@ -4235,7 +4439,27 @@ func _sibling_wav_rec(rec: Dictionary) -> Variant:
 	return _by_path.get(p.substr(0, dot) + ".wav")
 
 
+# The <stem>_16bit.wav sibling for a WAV rec (16-bit copy of a 24-bit/EXTENSIBLE
+# WAV Godot can't load directly), if it's already in the library.
+func _sibling_16bit_rec(rec: Dictionary) -> Variant:
+	var p := String(rec.get("path", ""))
+	var dot := p.rfind(".")
+	if dot < 0:
+		return null
+	return _by_path.get(p.substr(0, dot) + "_16bit.wav")
+
+
 func _convert_to_wav(rec: Dictionary, then_action: String) -> void:
+	_convert_audio(rec, "to_wav.py", "Decoding %s to WAV…", then_action)
+
+
+func _convert_to_16bit(rec: Dictionary, then_action: String) -> void:
+	_convert_audio(rec, "to_16bit.py", "Converting %s to 16-bit to play…", then_action)
+
+
+# Shared decode/convert launcher: runs indexer/<script_name> <src> <result> in a
+# thread, then _convert_finished merges the new record and continues `then_action`.
+func _convert_audio(rec: Dictionary, script_name: String, status_fmt: String, then_action: String) -> void:
 	if _convert_busy:
 		return
 	var abs := _abs_path(rec)
@@ -4245,10 +4469,10 @@ func _convert_to_wav(rec: Dictionary, then_action: String) -> void:
 	if FileAccess.file_exists(_convert_result_path):
 		DirAccess.remove_absolute(_convert_result_path)
 	var script := ProjectSettings.globalize_path("res://").path_join(
-		"../indexer/to_wav.py").simplify_path()
+		"../indexer/" + script_name).simplify_path()
 	_convert_busy = true
 	_convert_then = then_action
-	_an_status.text = "Decoding %s to WAV…" % String(rec.get("filename", ""))
+	_an_status.text = status_fmt % String(rec.get("filename", ""))
 	_convert_thread = Thread.new()
 	_convert_thread.start(_convert_run.bind(script, abs, _convert_result_path))
 
@@ -4268,18 +4492,28 @@ func _convert_finished() -> void:
 		_convert_thread.wait_to_finish()
 		_convert_thread = null
 	if not FileAccess.file_exists(_convert_result_path):
-		_an_status.text = "Convert to WAV failed (no output). Is python on PATH?"
+		_an_status.text = "Convert failed (no output). Is python on PATH?"
 		return
 	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(_convert_result_path))
 	if typeof(d) != TYPE_DICTIONARY or not d.get("ok", false):
-		_an_status.text = "Convert to WAV error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
+		_an_status.text = "Convert error: %s" % (d.get("error", "?") if typeof(d) == TYPE_DICTIONARY else "?")
 		return
 	var recs: Array = d.get("records", [])
-	_merge_new_records(recs)                        # the WAV row appears now
+	_merge_new_records(recs)                        # the new WAV row appears now
+	# to_wav.py reports "out"; to_16bit.py returns records only — fall back to those.
 	var wpath := String(d.get("out", ""))
+	if wpath == "" and not recs.is_empty():
+		wpath = String(recs[0].get("path", ""))
+	if wpath == "":                                 # nothing produced (e.g. already existed)
+		_an_status.text = "Convert produced no new file (a converted copy may already exist)."
+		return
 	_select_row_by_path(wpath)
 	var wrec: Variant = _by_path.get(wpath)
-	_an_status.text = "Decoded to WAV: %s" % wpath.get_file()
+	_an_status.text = "Converted: %s" % wpath.get_file()
+	if then == "__play__":
+		if typeof(wrec) == TYPE_DICTIONARY:
+			_play_selected()                        # the converted WAV row is now selected
+		return
 	if then != "" and typeof(wrec) == TYPE_DICTIONARY:
 		_ctx_rec = wrec
 		_ctx_run(then)                              # continue the original action on the WAV
@@ -4422,7 +4656,7 @@ func _dispatch_ctx(action: String) -> void:
 			_graph.queue_redraw()
 			if _xfade_chk: _xfade_chk.button_pressed = false
 			if _loop_chk: _loop_chk.button_pressed = true
-			_play_chops()                           # audition the chops, looping
+			_play_chops("chops")                    # audition the chops, looping
 		"make_loop":
 			_ctx_after_suggest = true               # bake once Suggest loop lands
 			_suggest_loop()
@@ -4492,7 +4726,7 @@ func _sl_finished() -> void:
 		return
 	_an_status.text = "Suggested loop %.3f–%.3fs (%.0f ms xfade, %s) — auditioning; tweak then Make loop." % [
 		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), float(d.get("crossfade_ms", 0.0)), kind]
-	_play_chops()                               # audition the crossfaded loop now
+	_play_chops("loop")                         # audition the crossfaded loop now
 
 
 # ----- make loop: loopify.py bakes a seamless name_loop.wav beside the original --
@@ -4726,6 +4960,12 @@ func _apply_saved_or_suggested() -> void:
 func _apply_suggested() -> void:
 	if _an_levels.is_empty():
 		return
+	# Suggest Chops works on the DETECTOR segments, so drop any leftover manual
+	# region (e.g. the green loop region a prior Suggest loop left) — otherwise
+	# _effective_segments() keeps returning that one region and chops do nothing.
+	if _graph != null and _graph.has_manual_sel():
+		_graph.sel_a = -1.0
+		_graph.sel_b = -1.0
 	_sil_slider.set_value_no_signal(_an_suggested)
 	_update_param_labels()
 	_on_param_changed()

@@ -26,7 +26,44 @@ for non-obvious gotchas.
   right-click has **Convert to WAV**, and the loop/chop actions auto-decode first
   (`_ctx_run` -> `_sibling_wav_rec` reuse, else `_convert_to_wav`/`_convert_finished`,
   then re-run on the WAV). `_play_selected` auditions **mp3 directly** via
-  `AudioStreamMP3` (loop via its `.loop`); everything else uses the decoded WAV.
+  `AudioStreamMP3` (loop via its `.loop`); WAV plays directly; **any OTHER format
+  auto-decodes to a sibling WAV on Play** (`_convert_to_wav` with the `"__play__"`
+  action; reuses an existing sibling via `_sibling_wav_rec`, else decodes then plays
+  the result in `_convert_finished`).
+- **24-bit / EXTENSIBLE WAV playback fallback**: Godot's runtime `AudioStreamWAV.
+  load_from_file` loads plain PCM 24-bit + float fine (downconverts) but REJECTS
+  WAVE_FORMAT_EXTENSIBLE ("not PCM", audio_stream_wav.cpp:737) — common for 24-bit
+  files. So bit depth is NOT the tell (see LESSONS_LEARNT). When `load_from_file`
+  returns null for a WAV, `_play_selected` makes a 16-bit sibling `<stem>_16bit.wav`
+  (`_convert_to_16bit` -> `indexer/to_16bit.py`, soundfile reads EXTENSIBLE) and plays
+  it; reuses one via `_sibling_16bit_rec`. `_convert_to_wav`/`_convert_to_16bit` share
+  `_convert_audio(rec, script, status_fmt, then)`; `_convert_finished` takes the out
+  path from `d.out` (to_wav) or `records[0].path` (to_16bit). NOT flagged red (would
+  tint ~93% of the library) — the fallback is silent/on-demand.
+- **Unsupported-file highlight**: `_is_playable(rec)` = mp3, or WAV with <=2 ch.
+  Rows that FAIL this are tinted red (`UNSUPPORTED_BG`/`_ODD`, whole row, over the
+  zebra/edit tint) in `_populate_tree` with a "Convert to WAV / press Play to decode"
+  tooltip on the filename cell. (Non-WAV auto-decodes on Play; a >2-ch WAV still
+  can't preview.)
+- **Playing-row highlight**: a yellow border is drawn over the row whose TRACK is
+  playing (or paused) via a mouse-ignored `RowHighlight` Control child of the Tree
+  (Tree has no row-border API — see LESSONS_LEARNT), driven from `_process` off
+  `_playing_item`. Not shown for chops/loop previews (`_playing_chops`).
+- **Three parallel transport rows** — Track (`_play_btn`), Loop (`_loop_play_btn`),
+  Chops (`_chops_play_btn`) — each owns ONE play button that acts on and reflects ONLY
+  its own kind. `_play_kind` ("track"|"loop"|"chops"|"") is what the player is/was last
+  loaded with; **only one kind plays at a time** (starting one supersedes the others).
+  The single helper `_update_play_btn()` labels each button "Pause X" iff `_player.
+  playing and _play_kind==X`, else "Play X" (it is the ONLY writer of the three texts).
+  Each button (`_on_play_track_pressed`/`_on_play_loop`/`_on_play_chops_btn`): if its
+  kind is LIVE (`_is_active()` = playing or paused) -> `_toggle_pause()`; else start its
+  kind fresh. The Track row NEVER shows loop/chops state (and vice-versa). `_play_chops
+  (kind)` sets `_play_kind` — "loop" from the Loop button/Suggest loop, "chops" from the
+  Chops button/Suggest chops, "" (kept) for internal re-previews (region re-drag). Loop
+  vs chops is thus decided by the BUTTON pressed, not by piece count. **Space**
+  (`_on_play_pressed` -> `_toggle_pause`) toggles the LAST-USED row = the loaded stream.
+  `_process` resets stale "Pause X" -> "Play X" on finish by checking all three labels
+  (the label is no longer a fixed "Pause" state flag).
 - **Audio is OUTSIDE the repo** in `S:\code\sound_lib_data`. Repo = code only.
   `.gitignore` also excludes audio extensions as a safeguard.
 - `index.json` is generated (gitignored); it carries `library_root`, so the
@@ -297,6 +334,10 @@ for non-obvious gotchas.
   stand out from read-only metadata.
   `multi_selected` drives per-selection refresh (item_selected doesn't fire in
   SELECT_MULTI); autoplay is suppressed while Shift/Ctrl is held.
+  Left-clicking a row (`_on_tree_mouse_selected`, non-editable cell, not ranging):
+  Autoplay ON -> `_play_selected()` (new track replaces old); Autoplay OFF but a
+  DIFFERENT row is playing/paused -> `_on_stop_pressed()` (selecting a new track
+  stops the old track/preview rather than leaving it playing).
 
 ## Standalone build (no Python for end users)
 - `indexer/tool.py` is a single dispatcher: `tool <cmd> [args]` runs any indexer
@@ -336,5 +377,9 @@ for non-obvious gotchas.
 - Build/update audio fingerprints: `py indexer/fingerprint.py [--only-missing]`  (-> library_root/fingerprints.npz)
 - Find files that SOUND similar: `py indexer/similar.py "<rel_path>" <out.json> [topn]`
 - Run the Python tests: `py -m pytest`  (golden tests in `indexer/tests/`)
-- Validate project headlessly: `Godot..._console.exe --headless --editor --quit-after 5`
+- Validate a script change by RUNNING the project (catches parse/runtime errors the
+  editor pass misses — see LESSONS_LEARNT):
+  `Godot..._console.exe --path app --quit-after 150` then grep stdout for "error".
+  (`--headless --editor --quit-after 5` only checks import; a clean export is NOT
+  proof the script loads — the exe can still blank-window.)
 - Run app: `Godot..._win64.exe --path app`
