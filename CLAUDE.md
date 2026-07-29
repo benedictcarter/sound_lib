@@ -333,6 +333,14 @@ for non-obvious gotchas.
   ends to a rising zero crossing and refine the length by window SSD. `_sl_finished`
   sets the green region + Xfade, ticks Crossfade + Loop, and auto-previews. Golden-
   tested (find_period periodic vs texture, suggest_loop region validity).
+  **Min loop s** (`_minloop_edit`, next to Xfade ms; 0 = off) sets a MINIMUM length
+  for the suggestion: `_suggest_loop` passes `--min-s N` to loopfind, where PERIODIC
+  content grows by WHOLE cycles (`ceil(need/period)` — a part-cycle would land the
+  wrap off-beat) and TEXTURE widens its plateau cap (`max(2.5, min_s)`), then
+  `_enforce_min` extends the end (pulling the start back only if the file runs out)
+  and re-snaps the end to a zero crossing only when that still meets the minimum.
+  A file shorter than the minimum returns the longest loop it can with `short: true`
+  — reported in the status line, never an error.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
@@ -399,7 +407,7 @@ for non-obvious gotchas.
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
 - Decode a non-WAV (mp3/…) to a sibling WAV: `py indexer/to_wav.py <src> <result.json>`
-- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json]`
+- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json] [--min-s N]`
 - Bake a seamless loop: `py indexer/loopify.py <audio> <spec.json> <result.json>`
 - Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)
 - Build/update audio fingerprints: `py indexer/fingerprint.py [--only-missing]`  (-> library_root/fingerprints.npz)
