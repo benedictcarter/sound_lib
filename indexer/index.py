@@ -30,6 +30,7 @@ import sys
 import time
 from pathlib import Path
 
+import cancel as C  # cooperative stop when the app is closing
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a"}
 
 # bext descriptions occasionally embed raw control chars (e.g. \x13). Left in, they
@@ -342,6 +343,12 @@ def main() -> None:
         if n % 500 == 0:
             print(f"  {n} files ({parsed} parsed, {reused} reused)...")
             _write_progress(args.progress, n, parsed, False)
+            if C.stop_requested():
+                # Unlike the other jobs a PARTIAL result is destructive here: every
+                # file not yet visited would vanish from index.json. Write nothing.
+                print("Cancelled - index.json left untouched.")
+                _write_progress(args.progress, n, parsed, True, False)
+                return
 
     # Did anything change vs the cached index? (new/modified files, or removals =
     # cached paths no longer present). Lets the app skip a reload when nothing moved.
@@ -355,7 +362,11 @@ def main() -> None:
         "files": records,
     }
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    # Atomic: the app may kill this process on shutdown, and a half-written
+    # index.json is an empty library on the next start.
+    tmp = OUTPUT_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, OUTPUT_PATH)
 
     dt = time.time() - t0
     matched = sum(1 for r in records if r["library"])

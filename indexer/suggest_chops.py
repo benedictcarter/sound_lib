@@ -32,6 +32,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 import gaps as G
 from envelope import suggest_threshold, FLOOR_DB
+import cancel as C  # cooperative stop when the app is closing
 
 _REPO_ENV = os.environ.get("SOUNDLIB_REPO")   # set by the app / frozen tool
 REPO = Path(_REPO_ENV) if _REPO_ENV else Path(__file__).resolve().parent.parent
@@ -125,6 +126,9 @@ def main() -> None:
                 print(f"  ! {rel}: {e}", file=sys.stderr)
         if analysed and analysed % 25 == 0:
             _write_progress(args.progress, analysed, n, False)
+        if C.stop_requested():          # app closing: keep what we have, stop here
+            print(f"Cancelled after {analysed} file(s).")
+            break
         if done % 100 == 0:
             rate = done / max(1e-6, time.time() - t0)
             print(f"  {done}/{n}  ({analysed} analysed)  {rate:.1f} files/s")

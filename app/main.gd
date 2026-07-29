@@ -782,6 +782,22 @@ var _clap_dl_btn: Button
 var _clap_dl_result_path: String = ""
 var _clapidx_progress_path: String = ""  # CLAP audio-index step of the update pipeline
 
+# ----- graceful shutdown ---------------------------------------------------
+# Every indexer job runs a CHILD PROCESS from a worker Thread, and some of them run
+# for minutes (the startup rescan analyses/embeds the whole library). Joining those
+# threads on the close request would freeze the main thread until the child finished
+# -> "not responding". So: on close we ask the jobs to stop (a flag file the scripts
+# poll), then wait a beat, then kill whatever is left, and only quit once no worker
+# thread is alive. `_quitting` also stops any new/chained job from starting.
+const QUIT_GRACE_MS := 2500           # cooperative stop window before we kill children
+const QUIT_HARD_MS := 8000            # absolute deadline -> terminate ourselves
+var _quitting: bool = false
+var _quit_t0: int = 0
+var _quit_killed: bool = false
+var _cancel_path: String = ""         # touch -> running indexer jobs wind up and exit
+var _child_mutex := Mutex.new()       # guards _child_pids (written from worker threads)
+var _child_pids: Array[int] = []
+
 # persisted UI prefs (window geom, column widths, sort, search/filters, toggles)
 var _prefs: Dictionary = {}
 var _prefs_path: String = ""
@@ -906,6 +922,17 @@ func _ready() -> void:
 	# So the indexer scripts / frozen tool.exe resolve app/index.json + library.cfg
 	# from the app's own location (globalize res://.. = the repo/dist root).
 	OS.set_environment("SOUNDLIB_REPO", _repo_root())
+	# Cooperative-stop flag: the long indexer jobs check for this file between files
+	# and wind up cleanly, so closing the window doesn't have to cut them off.
+	_cancel_path = ProjectSettings.globalize_path("user://cancel.flag")
+	if FileAccess.file_exists(_cancel_path):
+		DirAccess.remove_absolute(_cancel_path)    # stale flag from a previous run
+	OS.set_environment("SOUNDLIB_CANCEL", _cancel_path)
+	# X / Alt-F4 no longer quit on the spot; they route into _begin_quit. Both the
+	# node notification and the window signal are wired: with auto_accept_quit off,
+	# a missed close request would leave a window that CANNOT be closed at all.
+	get_tree().auto_accept_quit = false
+	get_window().close_requested.connect(_begin_quit)
 	_load_userdata()
 	_load_chopping()
 	_load_loudness()
@@ -1030,17 +1057,54 @@ func _indexer_newest_mtime() -> int:
 
 # Run an indexer command. args[0] is the .py script path used in dev (py script.py);
 # when the frozen tool.exe is present we call `tool.exe <cmd> <rest>` instead, so end
-# users need no Python. Output is captured in `output`.
-func _exec_tool(args: Array, output: Array) -> void:
+# users need no Python. Returns the child's exit code (-1 if it wouldn't start).
+# Called from worker threads.
+func _exec_tool(args: Array) -> int:
 	var exe := _tool_exe()
 	if exe != "":
 		var a := args.slice(1)
 		a.insert(0, String(args[0]).get_file().get_basename())   # "search.py" -> "search"
-		OS.execute(exe, a, output, true)
-	else:
-		var code := OS.execute("py", args, output, true)
-		if code == -1:
-			OS.execute("python", args, output, true)
+		return _run_proc(exe, a)
+	var code := _run_proc("py", args)
+	if code == -1:                       # py launcher not found; try python
+		code = _run_proc("python", args)
+	return code
+
+
+# Spawn a child and wait for it, WITHOUT blocking on it uninterruptibly: the pid is
+# registered so `_kill_children` can terminate it when the user closes the window
+# (OS.execute is blocking and gives no pid — that is what made close hang). Nothing
+# reads these scripts' stdout — every result comes back through a JSON file — so the
+# child just inherits ours and no pipe can fill up and deadlock it.
+func _run_proc(exe: String, args: Array) -> int:
+	var pid := OS.create_process(exe, args)
+	if pid <= 0:
+		return -1
+	_child_mutex.lock()
+	_child_pids.append(pid)
+	_child_mutex.unlock()
+	while OS.is_process_running(pid):
+		OS.delay_msec(40)
+	var code := OS.get_process_exit_code(pid)
+	_child_mutex.lock()
+	_child_pids.erase(pid)
+	_child_mutex.unlock()
+	return code
+
+
+# Terminate every child we started, and its own children (a `py` launcher spawns the
+# real python.exe, so killing just our pid can orphan the worker). taskkill /T /F does
+# the whole tree; OS.kill is the fallback off Windows.
+func _kill_children() -> void:
+	_child_mutex.lock()
+	var pids := _child_pids.duplicate()
+	_child_mutex.unlock()
+	for pid in pids:
+		if OS.get_name() == "Windows":
+			var out: Array = []
+			OS.execute("taskkill", ["/PID", str(pid), "/T", "/F"], out, true)
+		else:
+			OS.kill(pid)
 
 
 func _data_dir() -> String:
@@ -2088,6 +2152,8 @@ func _on_clap_text_changed(text: String) -> void:
 
 
 func _run_clap_search(query: String) -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _clap_search_busy:
 		return
 	if not FileAccess.file_exists(_library_root.path_join("clap.npz")):
@@ -2104,9 +2170,8 @@ func _run_clap_search(query: String) -> void:
 
 
 func _clap_search_run(script: String, query: String, out: String) -> void:
-	var output: Array = []
 	var args := [script, query, out, "500"]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_clap_search_finished")
 
 
@@ -2198,6 +2263,8 @@ func _apply() -> void:
 
 # ----- semantic search (indexer/search.py embeds the query, ranks by cosine) --
 func _run_semantic(query: String) -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if query == "":
 		_apply()
 		return
@@ -2217,9 +2284,8 @@ func _run_semantic(query: String) -> void:
 
 
 func _sem_run(script: String, query: String, out: String) -> void:
-	var output: Array = []
 	var args := [script, query, out, "500"]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_sem_finished")
 
 
@@ -2261,6 +2327,8 @@ func _apply_ranked_results(paths: Array, scores: Array) -> void:
 
 # ----- optional CLAP: download the model (building its index is part of Rescan) -
 func _download_clap() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _clap_dl_busy:
 		return
 	if FileAccess.file_exists(_clap_dl_result_path):
@@ -2275,9 +2343,8 @@ func _download_clap() -> void:
 
 
 func _clap_dl_run(script: String, result: String) -> void:
-	var output: Array = []
 	var args := [script, "--download", "--result", result]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_clap_dl_finished")
 
 
@@ -2307,6 +2374,8 @@ func _sibling_16bit_path(rel: String) -> String:
 
 
 func _convert_16bit_selected() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _to16_busy:
 		return
 	var todo: Array = []                           # rel paths that need converting
@@ -2348,9 +2417,8 @@ func _convert_16bit_selected() -> void:
 
 
 func _to16_run(script: String, spec: String, result: String, progress: String) -> void:
-	var output: Array = []
 	var args := [script, "--spec", spec, "--progress", progress, result]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_to16_finished")
 
 
@@ -2402,6 +2470,8 @@ func _inherit_userdata(src_rel: String, dst_rel: String) -> void:
 
 # ----- "Find similar": rank the library by how close a file SOUNDS to _ctx_rec ---
 func _find_similar(rec: Dictionary) -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _similar_busy:
 		return
 	if String(rec.get("ext", "")).to_lower() != "wav":
@@ -2418,9 +2488,8 @@ func _find_similar(rec: Dictionary) -> void:
 
 
 func _similar_run(script: String, rel: String, out: String) -> void:
-	var output: Array = []
 	var args := [script, rel, out, "500"]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_similar_finished")
 
 
@@ -3242,6 +3311,8 @@ func _on_library_chosen(dir: String) -> void:
 
 
 func _reindex_library() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _reindex_busy:
 		return
 	var script := ProjectSettings.globalize_path("res://").path_join(
@@ -3253,8 +3324,7 @@ func _reindex_library() -> void:
 
 
 func _reindex_run(script: String) -> void:
-	var output: Array = []
-	_exec_tool([script], output)
+	_exec_tool([script])
 	call_deferred("_reindex_finished")
 
 
@@ -3310,6 +3380,8 @@ func _build_pipeline() -> Array:
 
 # Entry point: the Rescan library button AND startup (call_deferred in _ready).
 func _start_rescan() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _pipe_busy or _reindex_busy:
 		return                                  # a pipeline/reindex is already running
 	if not DirAccess.dir_exists_absolute(_library_root):
@@ -3323,6 +3395,8 @@ func _start_rescan() -> void:
 
 
 func _pipe_advance() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	_pipe_i += 1
 	if _pipe_i >= _pipe_steps.size():
 		_pipe_all_done()
@@ -3339,8 +3413,7 @@ func _pipe_advance() -> void:
 
 
 func _pipe_run(args: Array) -> void:
-	var output: Array = []
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_pipe_step_finished")
 
 
@@ -3428,6 +3501,9 @@ func _input(event: InputEvent) -> void:
 
 
 func _process(_delta: float) -> void:
+	if _quitting:                                  # window is closing: nothing to draw
+		_quit_tick()
+		return
 	_update_rating_hover()
 	# live column resize, driven off the global mouse so the 8px grabber strips
 	# (and the title-row divider) don't drop the drag when the cursor moves off.
@@ -4086,6 +4162,8 @@ func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
 # Analyse EXACTLY these files (chops + loudness) in a thread — used to auto-fill the
 # dB / Chop columns for freshly made chops/loops. Coalesces if one is already running.
 func _analyse_paths(paths: Array) -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if paths.is_empty():
 		return
 	if _pa_busy or _pipe_busy:                  # don't collide with the update pipeline's
@@ -4115,9 +4193,8 @@ func _paths_of(recs: Array) -> Array:
 
 
 func _pa_run(script: String, paths_file: String) -> void:
-	var output: Array = []
 	var args := [script, "--paths", paths_file]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_pa_finished")
 
 
@@ -4485,6 +4562,8 @@ func _preview_frac_to_orig(f: float) -> float:
 
 # ----- chop to files: chop.py writes name_chopped_NNN.wav beside the original --
 func _chop_selected() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _chop_busy:
 		return
 	var segs := _effective_segments()
@@ -4527,11 +4606,7 @@ func _chop_selected() -> void:
 
 
 func _chop_run(script: String, audio: String, spec: String, result: String) -> void:
-	var output: Array = []
-	var args := [script, audio, spec, result]
-	var code := OS.execute("py", args, output, true)
-	if code == -1:                       # py launcher not found; try python
-		OS.execute("python", args, output, true)
+	_exec_tool([script, audio, spec, result])
 	call_deferred("_chop_finished")
 
 
@@ -4638,6 +4713,8 @@ func _convert_to_16bit(rec: Dictionary, then_action: String) -> void:
 # Shared decode/convert launcher: runs indexer/<script_name> <src> <result> in a
 # thread, then _convert_finished merges the new record and continues `then_action`.
 func _convert_audio(rec: Dictionary, script_name: String, status_fmt: String, then_action: String) -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _convert_busy:
 		return
 	var abs := _abs_path(rec)
@@ -4656,9 +4733,8 @@ func _convert_audio(rec: Dictionary, script_name: String, status_fmt: String, th
 
 
 func _convert_run(script: String, audio: String, result: String) -> void:
-	var output: Array = []
 	var args := [script, audio, result]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_convert_finished")
 
 
@@ -4845,6 +4921,8 @@ func _dispatch_ctx(action: String) -> void:
 
 # ----- suggest loop: loopfind.py picks a good loop region, then auto-preview ----
 func _suggest_loop() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _sl_busy:
 		return
 	if typeof(_an_rec) != TYPE_DICTIONARY:
@@ -4875,11 +4953,10 @@ func _min_loop_s() -> float:
 
 
 func _sl_run(script: String, audio: String, result: String, min_s: float) -> void:
-	var output: Array = []
 	var args := [script, audio, result]
 	if min_s > 0.0:
 		args.append_array(["--min-s", "%.4f" % min_s])
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_sl_finished")
 
 
@@ -4928,6 +5005,8 @@ func _sl_finished() -> void:
 
 # ----- make loop: loopify.py bakes a seamless name_loop.wav beside the original --
 func _make_loop() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	if _loop_busy:
 		return
 	var segs := _effective_segments()
@@ -4974,9 +5053,8 @@ func _make_loop() -> void:
 
 
 func _loop_run(script: String, audio: String, spec: String, result: String) -> void:
-	var output: Array = []
 	var args := [script, audio, spec, result]
-	_exec_tool(args, output)
+	_exec_tool(args)
 	call_deferred("_loop_finished")
 
 
@@ -5045,6 +5123,8 @@ func _update_param_labels() -> void:
 
 # --- run the Python envelope extractor for the selected file (off-thread) ---
 func _analyse_selected() -> void:
+	if _quitting:                       # window closing: don't start new work
+		return
 	var rec: Variant = _selected_rec()
 	if rec == null:
 		_an_status.text = "Select a row first."
@@ -5069,41 +5149,97 @@ func _analyse_selected() -> void:
 
 
 func _an_run(script: String, audio: String, out: String) -> void:
-	var output: Array = []
-	var code := OS.execute("py", [script, audio, out], output, true)
-	if code == -1:                       # py launcher not found; try python
-		OS.execute("python", [script, audio, out], output, true)
+	_exec_tool([script, audio, out])
 	call_deferred("_an_finished")
 
 
-func _exit_tree() -> void:
+# ===========================================================================
+#  Graceful shutdown (X / Alt-F4)
+# ===========================================================================
+# The window manager's close request is intercepted (auto_accept_quit = false in
+# _ready) so we never tear the tree down while a job thread is parked on a child
+# process that runs for minutes — that join is what froze the window. Instead:
+# save, ask the jobs to stop, and let _process poll until the threads are done.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		_begin_quit()
+
+
+# Every worker thread, alive or not. Order is irrelevant — we only ever ask
+# "is any of them still running?" and join them all at the very end.
+func _job_threads() -> Array:
+	return [_an_thread, _pipe_thread, _chop_thread, _sem_thread, _convert_thread,
+		_sl_thread, _loop_thread, _reindex_thread, _pa_thread, _similar_thread,
+		_clap_dl_thread, _to16_thread, _clap_search_thread]
+
+
+func _jobs_running() -> bool:
+	for t in _job_threads():
+		if t != null and t.is_started() and t.is_alive():
+			return true
+	return false
+
+
+# Touch the flag file the indexer scripts poll between files: they checkpoint what
+# they have and exit, rather than being cut off (or making us wait minutes).
+func _request_stop() -> void:
+	if _cancel_path == "":
+		return
+	var f := FileAccess.open(_cancel_path, FileAccess.WRITE)
+	if f:
+		f.store_string("stop")
+		f.close()
+
+
+func _begin_quit() -> void:
+	if _quitting:
+		return
+	_quitting = true                      # from here on, no job starts or chains
+	_quit_t0 = Time.get_ticks_msec()
 	_save_prefs()
 	if _chop_save_debounce and _chop_save_debounce.time_left > 0.0:
-		_save_chopping()                 # flush a pending coalesced write
-	if _an_thread and _an_thread.is_started():
-		_an_thread.wait_to_finish()
-	if _pipe_thread and _pipe_thread.is_started():
-		_pipe_thread.wait_to_finish()
-	if _chop_thread and _chop_thread.is_started():
-		_chop_thread.wait_to_finish()
-	if _sem_thread and _sem_thread.is_started():
-		_sem_thread.wait_to_finish()
-	if _convert_thread and _convert_thread.is_started():
-		_convert_thread.wait_to_finish()
-	if _sl_thread and _sl_thread.is_started():
-		_sl_thread.wait_to_finish()
-	if _reindex_thread and _reindex_thread.is_started():
-		_reindex_thread.wait_to_finish()
-	if _pa_thread and _pa_thread.is_started():
-		_pa_thread.wait_to_finish()
-	if _similar_thread and _similar_thread.is_started():
-		_similar_thread.wait_to_finish()
-	if _clap_dl_thread and _clap_dl_thread.is_started():
-		_clap_dl_thread.wait_to_finish()
-	if _to16_thread and _to16_thread.is_started():
-		_to16_thread.wait_to_finish()
-	if _clap_search_thread and _clap_search_thread.is_started():
-		_clap_search_thread.wait_to_finish()
+		_save_chopping()                  # flush a pending coalesced write
+	if _player:
+		_player.stop()
+	if not _jobs_running():
+		get_tree().quit()
+		return
+	_request_stop()                       # jobs mid-flight: ask them to wind up
+	if _status_label:
+		_status_label.text = "Closing — stopping background jobs…"
+	set_process(true)                     # _process drives _quit_tick from here
+
+
+# Polled each frame while quitting. Cooperative first, then kill, then (never seen
+# in practice) terminate ourselves rather than leave a window that won't close.
+func _quit_tick() -> void:
+	if not _jobs_running():
+		get_tree().quit()
+		return
+	var elapsed := Time.get_ticks_msec() - _quit_t0
+	if elapsed > QUIT_GRACE_MS and not _quit_killed:
+		_quit_killed = true
+		push_warning("Shutdown: background job did not stop in time — killing it.")
+		_kill_children()                  # the blocked threads return as their child dies
+	elif elapsed > QUIT_HARD_MS:
+		push_error("Shutdown: worker thread still alive after %d ms — force exiting." % elapsed)
+		OS.kill(OS.get_process_id())
+
+
+# Reached only once no worker thread is alive (see _quit_tick), so these joins are
+# immediate — they just reap the finished threads.
+func _exit_tree() -> void:
+	if not _quitting:                     # hard quit: --quit-after, editor stop, SIGTERM
+		_save_prefs()
+		if _chop_save_debounce and _chop_save_debounce.time_left > 0.0:
+			_save_chopping()
+		_request_stop()                   # ...so the joins below aren't a minutes-long wait
+		_kill_children()
+	for t in _job_threads():
+		if t != null and t.is_started():
+			t.wait_to_finish()
+	if _cancel_path != "" and FileAccess.file_exists(_cancel_path):
+		DirAccess.remove_absolute(_cancel_path)
 
 
 func _an_finished() -> void:
