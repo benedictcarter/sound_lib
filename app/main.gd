@@ -983,14 +983,11 @@ func _apply_window_prefs() -> void:
 func _apply_view_prefs() -> void:
 	if _prefs.get("col_w") is Array and _prefs["col_w"].size() == COL_COUNT:
 		for c in COL_COUNT:
-			_col_w[c] = int(_prefs["col_w"][c])
-			_tree.set_column_custom_minimum_width(c, _col_w[c])
+			_col_w[c] = maxi(COL_MIN_W, int(_prefs["col_w"][c]))
 	if _prefs.has("sort_col"):
 		_sort_col = clampi(int(_prefs["sort_col"]), 0, COL_COUNT - 1)
 		_sort_asc = bool(_prefs.get("sort_asc", true))
-		for c in COL_COUNT:
-			var arrow := ("  v" if _sort_asc else "  ^") if c == _sort_col else ""
-			_tree.set_column_title(c, COL_TITLES[c] + arrow)
+	_apply_all_cols()          # widths + sort arrow, titles elided to fit
 	if _prefs.has("autoplay"):
 		_autoplay.button_pressed = bool(_prefs["autoplay"])
 	if _prefs.has("loop"):
@@ -1285,6 +1282,9 @@ func _build_ui() -> void:
 	_row_hl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_tree.add_child(_row_hl)
 	root.add_child(tablebox)
+	# now that the Tree is in the scene (its theme/font are live) push the widths
+	# through _apply_col, which elides each title so the width is exact.
+	_apply_all_cols()
 
 	# Draggable resize grabbers (white ◄► strips). One per column edge, floated on
 	# top of the whole window so each spans BOTH the filter row and the sort/title
@@ -1435,6 +1435,7 @@ func _build_filter_controls() -> void:
 				var le := LineEdit.new()
 				le.placeholder_text = "filter"
 				le.add_theme_font_size_override("font_size", 12)
+				le.add_theme_constant_override("minimum_character_width", 0)  # else a ~53px floor
 				le.text_changed.connect(func(t: String):
 					var s := t.strip_edges().to_lower()
 					if s == "": _filter_text.erase(col)
@@ -1456,6 +1457,7 @@ func _build_filter_controls() -> void:
 			"num":
 				var b := Button.new()
 				b.text = "min–max"
+				b.clip_text = true    # else its TEXT width is a MINIMUM -> overhangs a narrow column
 				b.add_theme_font_size_override("font_size", 11)
 				b.pressed.connect(_on_num_filter_pressed.bind(col, b))
 				ctrl = b
@@ -2576,12 +2578,7 @@ func _on_title_clicked(col: int, _mouse_btn: int) -> void:
 	else:
 		_sort_col = col
 		_sort_asc = true
-	# arrow indicator in titles
-	for c in COL_COUNT:
-		var arrow := ""
-		if c == _sort_col:
-			arrow = "  v" if _sort_asc else "  ^"
-		_tree.set_column_title(c, COL_TITLES[c] + arrow)
+	_apply_all_cols()                         # arrow indicator, re-elided to fit
 	_sort_filtered()
 	_populate_tree()
 
@@ -2792,8 +2789,53 @@ func _on_tree_item_edited() -> void:
 func _begin_resize(col: int) -> void:
 	_resize_col = col
 	_resize_start_x = get_global_mouse_position().x
-	_resize_start_w = _col_w[col]
+	# start from the ACTUAL drawn width, not the stored one — if they ever drift
+	# (an old prefs file, a title floor) the drag would otherwise jump.
+	_resize_start_w = _tree.get_column_width(col)
+	_col_w[col] = _resize_start_w
 	_suppress_title_click = true                   # this drag isn't a sort click
+
+
+# Apply _col_w[c] to the Tree so the DRAWN width is exactly the width asked for.
+#
+# A Tree floors a column's drawn width at the width of its TITLE text (+8 px of
+# panel padding) whatever set_column_custom_minimum_width says — and that floor
+# differs per column ("Ch" 29 px, "Chop pieces" 101 px) and GROWS when the sort
+# arrow is appended. Left alone, dragging columns narrow stops at a different
+# width for every column, and because _col_w kept shrinking below the floor the
+# next drag of that edge did nothing until the mouse caught back up. So we ELIDE
+# the title ("Chop pieces" -> "Chop p…" -> "…") until it fits the requested
+# width; the full name stays on the filter control's tooltip below it.
+func _apply_col(c: int) -> void:
+	var w: int = maxi(COL_MIN_W, int(_col_w[c]))
+	_col_w[c] = w
+	var arrow := ""
+	if c == _sort_col:
+		arrow = "  v" if _sort_asc else "  ^"
+	var base: String = COL_TITLES[c]
+	# With the custom minimum at 1, get_column_width() IS the title floor — the
+	# Tree measures it with its own font, live in the same frame. Ask it directly
+	# rather than re-deriving the engine's font/padding maths.
+	_tree.set_column_custom_minimum_width(c, 1)
+	var cands: Array = [base + arrow]
+	for n in range(base.length() - 1, 0, -1):
+		cands.append(base.substr(0, n) + "…" + arrow)
+	if arrow != "":
+		cands.append("…" + arrow)                  # drop the name, keep the arrow
+	cands.append("…")
+	cands.append("")                               # floor 8 px: always fits
+	for cand in cands:
+		_tree.set_column_title(c, cand)
+		if _tree.get_column_width(c) <= w:
+			break
+	_tree.set_column_custom_minimum_width(c, w)
+
+
+# Re-apply every column's width + (elided, arrowed) title. Cheap: a handful of
+# string measurements per column. Call after _col_w or the sort column changes.
+func _apply_all_cols() -> void:
+	for c in COL_COUNT:
+		_apply_col(c)
 
 
 # A grabber strip was pressed -> begin resizing its column.
@@ -3512,7 +3554,7 @@ func _process(_delta: float) -> void:
 			var w := maxi(COL_MIN_W, _resize_start_w + int(get_global_mouse_position().x - _resize_start_x))
 			if w != _col_w[_resize_col]:
 				_col_w[_resize_col] = w
-				_tree.set_column_custom_minimum_width(_resize_col, w)
+				_apply_col(_resize_col)            # width + elided title, exact
 		else:
 			_resize_col = -1
 	_layout_filter_header()                        # keep filters aligned over columns
