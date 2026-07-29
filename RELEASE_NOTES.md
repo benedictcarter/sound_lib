@@ -153,5 +153,8 @@ libraries — built for the [Sonniss GDC Game Audio Bundles](https://sonniss.com
 ---
 
 ## 📝 Notes
-- Everything runs offline; nothing is uploaded.
+- Everything runs offline; nothing is uploaded. The only network access is the optional
+  one-time CLAP model download.
 - **Full changelog:** [`v1.0...v1.1`](https://github.com/benedictcarter/sound_lib/compare/v1.0...v1.1)
+- `SoundLibrary_v1.1_win64.zip` — 158 MB (381 MB unzipped)
+  SHA-256 `a410e5bdf52058a6c9df106bd4bf4369a31412b9e6ef262172f36e1d90f79bde`

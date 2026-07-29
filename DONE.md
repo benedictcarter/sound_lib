@@ -3,6 +3,22 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **v1.1 release package** (`docs/release-notes-v1.1`, `docs/v1.1-packaging`) — drafted
+  the v1.1 notes (everything since the `v1.0` tag `ac549dd`) and built
+  `SoundLibrary_v1.1_win64.zip` (158 MB; `app/SoundLibrary.exe` + `tool/` +
+  a placeholder `library.cfg` + a first-run README), kept in
+  `S:\code\sound_lib_dist` — outside the repo, like the audio. Verified by
+  EXTRACTING the zip to a clean folder and running it against a 3-file test
+  library: the whole Rescan pipeline ran through the frozen `tool.exe` (index →
+  chops+loudness → fingerprints → semantic), writing `chopping/loudness/
+  embeddings/fingerprints` into the library folder and `index.json` beside the
+  app, with an empty stderr. GitHub release admin is Ben's (`gh` is unauthenticated
+  here; a token would need `gh auth login`).
+- **No ERROR line when there is no `indexer/` dir** (`fix/no-indexer-dir-error`) — the
+  `tool.exe` staleness guard listed `indexer/*.py`, which a shipped bundle doesn't
+  have, so every standalone launch logged `Couldn't open directory at path
+  "../indexer"`. Behaviour was already right (mtime 0 → use the exe); this only
+  silences it. Found by smoke-testing the packaged build rather than the dev tree.
 - **Drag-and-drop column reordering, remembered** (`feat/reorder-columns`) — drag a
   header title sideways to move that column; a gold insertion line and a ghost name
   show where it will land, and the order is saved to prefs so it comes back next
