@@ -3,6 +3,12 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **Rebuilt the standalone** (`chore/standalone-rebuild`) — fresh `tool/tool.exe`
+  (PyInstaller) + `app/SoundLibrary.exe` (Godot export) off the graceful-shutdown
+  merge, so the frozen scripts carry `indexer/cancel.py` and can be *asked* to stop
+  on close instead of only killed. Verified frozen: cancel flag aborts `index`
+  without writing, a clean incremental index is 7,444 files in 1.1 s, and semantic
+  `search` (fastembed) still answers in ~2.4 s.
 - **Graceful close on X / Alt-F4** (`fix/graceful-shutdown`) — the app no longer
   hangs when closed while a background job runs. Close is intercepted, prefs are
   saved, running indexer jobs are asked to stop via a flag file (they wind up in
