@@ -310,7 +310,21 @@ for non-obvious gotchas.
   end only instead of starting a new selection, clamped so it can't cross the other
   end (`MIN_SEL`); hovering one sets the HSIZE cursor (`_set_edge_hover`) and
   brightens the tab. Release commits like any region drag, so a playing preview
-  follows. Golden-tested headlessly:
+  follows. The DETECTOR's blue **chop boundaries drag the same way** (so one piece
+  can be nudged without re-tuning the sliders for the whole file): `_seg_edge_at`
+  finds the nearest boundary within `HANDLE_GRAB`, `_seg_drag`/`_seg_hover` are
+  `Vector2i(segment, edge)` (edge 0=start, 1=end; x<0 = none), and `_drag_seg_edge`
+  clamps each edge between its own partner (`SEG_MIN_FRAMES`) and the neighbouring
+  piece so pieces stay ordered and non-empty. It mutates `_graph.segments` IN PLACE,
+  which is exactly what `_effective_segments()` returns, so Make chops / Play chops
+  follow with no extra plumbing (both already take float frames). Signals
+  `segments_edited(i)` (live -> `_on_segments_edited` status line) /
+  `segments_committed` (-> `_on_segments_committed`, re-previews). Boundary tabs are
+  blue (`_draw_handle`'s `tint`) and drawn on every boundary up to `SEG_HANDLE_MAX`,
+  else only on the hovered one. NOT persisted (chopping.json holds detector PARAMS);
+  a slider move re-detects and discards them, which `_on_param_changed` says out loud
+  via `_chop_edited`. A manual region hides the boundaries, so the two never fight.
+  Golden-tested headlessly (28 assertions):
   `Godot..._console.exe --headless --path app --script tests/test_wavegraph_handles.gd`.
   **Right-click-drag** sets the height (silence threshold). Seek is on the strip
   below (the graph no longer seeks). `_graph.has_manual_sel()` gates everything:

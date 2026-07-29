@@ -3,7 +3,7 @@
 Outstanding tasks. Move finished ones to [DONE.md](DONE.md).
 
 ## In flight (2026-07-29 — one branch + UAT each)
-- [ ] Draggable handles on the yellow region edges — `feat/region-drag-handles` (in UAT)
+- [ ] Draggable chop boundaries too (the blue detector edges) — `feat/chop-edge-handles`
 - [ ] Show the crossfaded region in its own colour — `feat/crossfade-region-colour`
 
 ## Backlog
