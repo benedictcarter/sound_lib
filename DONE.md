@@ -3,6 +3,10 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **ms precision on GUI times** (`feat/ms-precision-times`) — `_fmt_time` renders
+  `m:ss.mmm` everywhere (transport, status lines, chop cells, slider labels); the
+  Duration filter slider keeps compact `m:ss`, its ticks have no room for ms.
+  UAT passed; merged to master.
 - **Minimum loop time** (`feat/loop-min-time`) — "Min loop s" field in the Loop row;
   `loopfind.py --min-s N` grows periodic loops by whole cycles and widens texture
   plateaus, capped by the file (reported as `short`). UAT passed; merged to master.

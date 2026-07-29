@@ -3,8 +3,7 @@
 Outstanding tasks. Move finished ones to [DONE.md](DONE.md).
 
 ## In flight (2026-07-29 — one branch + UAT each)
-- [ ] ms precision on GUI times — `feat/ms-precision-times`
-- [ ] Draggable handles on the yellow region edges — `feat/region-drag-handles`
+- [ ] Draggable handles on the yellow region edges — `feat/region-drag-handles` (in UAT)
 - [ ] Show the crossfaded region in its own colour — `feat/crossfade-region-colour`
 
 ## Backlog

@@ -164,6 +164,43 @@ class WaveGraph extends Control:
 
 	func has_manual_sel() -> bool:
 		return sel_a >= 0.0 and sel_b >= 0.0 and absf(sel_b - sel_a) > 0.0005
+
+	# Each yellow region edge carries a grab HANDLE (an arrow tab): press within
+	# HANDLE_GRAB px of an edge and you drag THAT end only, instead of starting a
+	# new selection — so a suggested loop / a chop region can be nudged rather than
+	# redrawn from scratch. `_edge_drag`/`_edge_hover`: 0 = none, 1 = start, 2 = end.
+	const HANDLE_GRAB := 8.0          # px either side of an edge that grabs it
+	const HANDLE_W := 8.0             # drawn tab width
+	const HANDLE_H := 34.0            # drawn tab height
+	const MIN_SEL := 0.0015           # smallest region an edge drag can shrink to
+	var _edge_drag := 0
+	var _edge_hover := 0
+
+	## Which edge handle (if any) sits under x. Nearest wins when the region is
+	## narrower than the grab zone, so the two handles never fight over a click.
+	func _edge_at(x: float) -> int:
+		if not has_manual_sel():
+			return 0
+		var w := maxf(size.x, 1.0)
+		var dlo := absf(x - minf(sel_a, sel_b) * w)
+		var dhi := absf(x - maxf(sel_a, sel_b) * w)
+		if dlo <= HANDLE_GRAB and dlo <= dhi:
+			return 1
+		if dhi <= HANDLE_GRAB:
+			return 2
+		return 0
+
+	func _set_edge_hover(e: int) -> void:
+		if e == _edge_hover:
+			return
+		_edge_hover = e
+		mouse_default_cursor_shape = Control.CURSOR_HSIZE if e != 0 else Control.CURSOR_ARROW
+		queue_redraw()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_MOUSE_EXIT and _edge_drag == 0:
+			_set_edge_hover(0)
+
 	const TOP_DB := 0.0
 	const BOT_DB := -90.0
 	const TRACK_PAD := 7.0            # px from the bottom for the seek track + dot
@@ -199,8 +236,22 @@ class WaveGraph extends Control:
 		if event is InputEventMouseButton:
 			if event.button_index == MOUSE_BUTTON_LEFT:
 				if event.pressed:
-					sel_a = _frac_at_x(event.position.x)
-					sel_b = sel_a
+					_edge_drag = _edge_at(event.position.x)
+					if _edge_drag != 0:            # grabbed a handle: keep the region,
+						var lo := minf(sel_a, sel_b)   # normalise so sel_a is always
+						var hi := maxf(sel_a, sel_b)   # the START edge while dragging
+						sel_a = lo
+						sel_b = hi
+					else:
+						sel_a = _frac_at_x(event.position.x)
+						sel_b = sel_a
+					queue_redraw()
+					accept_event()
+				elif _edge_drag != 0:              # released a handle: keep + commit
+					_edge_drag = 0
+					_set_edge_hover(_edge_at(event.position.x))
+					region_selected.emit(minf(sel_a, sel_b), maxf(sel_a, sel_b))
+					region_committed.emit()
 					queue_redraw()
 					accept_event()
 				else:                              # release: finalise (or clear on a click)
@@ -223,13 +274,22 @@ class WaveGraph extends Control:
 				accept_event()
 		elif event is InputEventMouseMotion:
 			if (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
-				sel_b = _frac_at_x(event.position.x)
+				var f := _frac_at_x(event.position.x)
+				# a handle drag moves ONE end and can't push it past the other
+				if _edge_drag == 1:
+					sel_a = clampf(f, 0.0, maxf(sel_b - MIN_SEL, 0.0))
+				elif _edge_drag == 2:
+					sel_b = clampf(f, minf(sel_a + MIN_SEL, 1.0), 1.0)
+				else:
+					sel_b = f
 				region_selected.emit(minf(sel_a, sel_b), maxf(sel_a, sel_b))
 				queue_redraw()
 				accept_event()
 			elif (event.button_mask & MOUSE_BUTTON_MASK_RIGHT) != 0:
 				threshold_picked.emit(_db_at_y(event.position.y))
 				accept_event()
+			else:
+				_set_edge_hover(_edge_at(event.position.x))   # cursor + handle glow
 
 	# Kept sounds are green; the bits being chopped away are grey (still drawn).
 	func _draw() -> void:
@@ -264,10 +324,12 @@ class WaveGraph extends Control:
 			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), green if kept else grey, 1.0)
 		var font := get_theme_default_font()
 		if sel:
-			# bright yellow edges of the selected region
+			# bright yellow edges of the selected region, each with a drag handle
 			var scol := Color(1.0, 0.85, 0.2)
 			draw_line(Vector2(m_lo * w, 0), Vector2(m_lo * w, h), scol, 1.5)
 			draw_line(Vector2(m_hi * w, 0), Vector2(m_hi * w, h), scol, 1.5)
+			_draw_handle(m_lo * w, true, _edge_hover == 1 or _edge_drag == 1)
+			_draw_handle(m_hi * w, false, _edge_hover == 2 or _edge_drag == 2)
 		elif has_segs:
 			# detector chop boundaries: start + end of every kept piece, in blue
 			var bcol := Color(0.30, 0.62, 1.0, 0.9)
@@ -294,6 +356,22 @@ class WaveGraph extends Control:
 			var px := playhead * w
 			draw_line(Vector2(px, 0), Vector2(px, h), Color(1, 1, 1, 0.85), 1.0)
 			draw_circle(Vector2(px, track_y), 5.0, Color(1, 1, 1, 0.95))
+
+	## Grab tab on one region edge: a yellow arrow pointing the way that edge moves.
+	## It sits INSIDE the region (so the pair never overlap on a narrow selection)
+	## and brightens while hovered or dragged.
+	func _draw_handle(x: float, is_start: bool, hot: bool) -> void:
+		var col := Color(1.0, 0.96, 0.60) if hot else Color(1.0, 0.85, 0.2)
+		var cy := size.y * 0.42
+		var x0 := clampf(x if is_start else x - HANDLE_W, 0.0, maxf(size.x - HANDLE_W, 0.0))
+		draw_rect(Rect2(x0, cy - HANDLE_H * 0.5, HANDLE_W, HANDLE_H), col)
+		# ◄ / ► cut out of the tab in the background colour so it reads at a glance
+		var mx := x0 + HANDLE_W * 0.5
+		var tip := mx - 2.5 if is_start else mx + 2.5
+		var base := mx + 2.0 if is_start else mx - 2.0
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(tip, cy), Vector2(base, cy - 4.0), Vector2(base, cy + 4.0)]),
+			Color(0.03, 0.03, 0.04))
 
 	func _frame_in_segment(fi: int) -> bool:
 		for s in segments:
