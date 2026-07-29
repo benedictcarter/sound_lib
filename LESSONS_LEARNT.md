@@ -231,3 +231,38 @@ frames run — errors then surface as real errors. This caught nothing on the fi
 run, which is the point: it turned "drag the handle and squint" into a 2-second
 check that an edge drag moves one end, clamps against the other, and doesn't steal
 a press meant to start a fresh selection.
+
+## `OS.execute` is uninterruptible, so joining job threads on exit freezes the window
+Closing the app (X / Alt-F4) hung: the window went white, and only after ~20 more
+clicks did Windows offer to kill "not responding". Nothing was deadlocked — the
+main thread was in `_exit_tree`, which joined every worker `Thread`, and those
+threads were parked inside a BLOCKING `OS.execute("py", …)` running an indexer
+job. The startup rescan fires automatically on every launch, so for the first few
+minutes of any session there is always such a job in flight: closing meant waiting
+for `analyse_audio`/`fingerprint`/`embed` to grind through 7,000 files. Two
+properties of `OS.execute` make it a trap for anything a user can interrupt: it
+blocks the calling thread with no cancellation, and it hands back **no pid**, so
+there is nothing to kill either. `OS.create_process` returns a pid and never
+blocks — poll `OS.is_process_running(pid)` and you own the child. The fix is that
+plus intercepting the close: `get_tree().auto_accept_quit = false`, handle
+`NOTIFICATION_WM_CLOSE_REQUEST`, save, signal the jobs, and let `_process` poll
+until no thread is alive — never join a thread on the frame the user clicked X.
+Killing needs `taskkill /T` (the tree), not `OS.kill`: `py.exe` is a launcher that
+spawns the real `python.exe`, and killing only the launcher orphans the worker —
+which then keeps writing to the very files the next run reads. Cooperative first,
+kill second: the scripts poll a flag file (`SOUNDLIB_CANCEL`) between files and
+exit cleanly in ~40 ms; the 2.5 s kill is for jobs still inside a slow import
+(`fastembed`, the CLAP session) that never reach a check.
+
+## Windows won't `os.replace` over a file you still have open — including via np.load
+Making the .npz writes atomic (temp + `os.replace`, so a killed job can't leave a
+truncated index) failed instantly with `PermissionError: [WinError 5]` on the
+FIRST run. The culprit was three lines above: `d = np.load(out_path)` returns a
+lazy `NpzFile` that keeps the handle open, and the incremental scripts load the
+existing vectors, then rewrite that same path. Plain `np.savez` had always worked
+because CPython opens files share-read/write — but NOT share-delete, and a rename
+over an open file needs delete rights. POSIX would have allowed it silently, so
+this only exists on Windows. Read the arrays out inside a `with np.load(...) as d`
+and let it close. Same visit: `d["vectors"][i]` inside a loop re-decompresses the
+whole array on every iteration — pull `vectors`/`paths` out once (7,400 rows went
+from seconds to instant), which also gets the job to its first cancel check sooner.

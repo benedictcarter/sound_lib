@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import cancel as C  # cooperative stop when the app is closing
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
@@ -37,6 +38,15 @@ def doc_text(r: dict) -> str:
     stem = Path(r.get("filename", "")).stem.replace("_", " ").replace("-", " ")
     parts = [stem, r.get("description", ""), r.get("library", ""), r.get("supplier", "")]
     return " ".join(p for p in parts if p).strip()
+
+
+def _savez_atomic(out_path: Path, **arrays) -> None:
+    """Write the .npz via a temp file + os.replace. Partial results are fine (the
+    index is a merge of old + new), a TRUNCATED file is not — and the app may kill
+    this process when the user closes the window."""
+    tmp = Path(str(out_path) + ".tmp.npz")
+    np.savez(tmp, **arrays)
+    os.replace(tmp, out_path)
 
 
 def _write_progress(path, done, total, finished):
@@ -64,9 +74,13 @@ def main() -> None:
 
     have: dict = {}
     if args.only_missing and out_path.exists():
-        d = np.load(out_path, allow_pickle=True)
-        for i, p in enumerate(d["paths"]):
-            have[str(p)] = d["vectors"][i]
+        # Read it out and CLOSE it: an open handle on Windows blocks the atomic
+        # replace of this very file at the end. (Pull both arrays out once —
+        # indexing d[...] per row re-decompresses the whole array each time.)
+        with np.load(out_path, allow_pickle=True) as d:
+            vectors, paths = d["vectors"], d["paths"]
+        for i, p in enumerate(paths):
+            have[str(p)] = vectors[i]
 
     todo = [r for r in files if r["path"] not in have] if args.only_missing else files
     if not todo:
@@ -87,11 +101,14 @@ def main() -> None:
         done += 1
         if done % 25 == 0:
             _write_progress(args.progress, done, len(todo), False)
+        if C.stop_requested():          # app closing: save what we have, stop here
+            print(f"Cancelled after {done} file(s).")
+            break
 
     have.update(new_vecs)                         # merge old + new, keep index order
     order = [r["path"] for r in files if r["path"] in have]
     vecs = np.asarray([have[p] for p in order], dtype=np.float32)
-    np.savez(out_path, vectors=vecs, paths=np.asarray(order), model=np.asarray(MODEL))
+    _savez_atomic(out_path, vectors=vecs, paths=np.asarray(order), model=np.asarray(MODEL))
     _write_progress(args.progress, done, len(todo), True)
     print(f"Wrote {out_path}  {vecs.shape}  ({done} new)  in {time.time()-t0:.0f}s")
 

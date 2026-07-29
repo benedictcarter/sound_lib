@@ -3,6 +3,12 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **Graceful close on X / Alt-F4** (`fix/graceful-shutdown`) — the app no longer
+  hangs when closed while a background job runs. Close is intercepted, prefs are
+  saved, running indexer jobs are asked to stop via a flag file (they wind up in
+  ~40 ms), stragglers are killed after 2.5 s, and the window only quits once no
+  worker thread is alive. Child processes now run through `OS.create_process` (pid
+  tracked, killable) instead of the blocking, pid-less `OS.execute`.
 - **Crossfaded region in its own colour** (`feat/crossfade-region-colour`) — the two
   blended ends of a loop region shade violet with an "xfade N ms" label, clamped at
   half the region each (the clamp `loopify` bakes with). UAT passed; merged to master.

@@ -32,7 +32,9 @@ for non-obvious gotchas.
   index step reported `changed`, then `_recompute_targets` + `_report_renames`, and
   drains `_pa_pending` (chops/loops queued mid-run). All jobs run through `_exec_tool`
   (so they work in the frozen standalone too — the old Analyse-Audio button used raw
-  `py`, which was broken there). The separate **Update semantic index / Update
+  `py`, which was broken there) -> `_run_proc` (`OS.create_process` + poll, NOT the
+  blocking pid-less `OS.execute` — see Shutdown below; nothing reads the children's
+  stdout, every result comes back via a JSON file). The separate **Update semantic index / Update
   fingerprints / Build CLAP index / Analyse Audio buttons were REMOVED** — folded into
   this pipeline. **Download CLAP stays** (one-time model fetch; Rescan then builds the
   CLAP index). Guards vs `_reindex_library` (both write index.json non-atomically);
@@ -86,6 +88,28 @@ for non-obvious gotchas.
   (`_on_play_pressed` -> `_toggle_pause`) toggles the LAST-USED row = the loaded stream.
   `_process` resets stale "Pause X" -> "Play X" on finish by checking all three labels
   (the label is no longer a fixed "Pause" state flag).
+- **Shutdown (X / Alt-F4) is intercepted** — `auto_accept_quit = false` in `_ready`,
+  so a close request goes to `_begin_quit` (`_notification` on
+  `NOTIFICATION_WM_CLOSE_REQUEST` AND the `close_requested` signal — with
+  auto-accept off, a missed request would make the window unclosable). It saves
+  prefs/chopping, stops the player, and if any worker thread is alive writes the
+  **cancel flag** (`user://cancel.flag`, path passed to the children as
+  `SOUNDLIB_CANCEL`), then `_process` -> `_quit_tick` polls: quit as soon as
+  `_jobs_running()` is false, kill the child process TREE at `QUIT_GRACE_MS`
+  (2.5 s, `_kill_children` -> `taskkill /T /F` — `py.exe` spawns the real
+  `python.exe`, so killing one pid orphans the worker), self-terminate at
+  `QUIT_HARD_MS` (8 s) as a backstop. `_quitting` also makes every job starter
+  return early so nothing new (or chained, e.g. `_pipe_advance`) begins. `_exit_tree`
+  is reached only when no thread is alive so its joins are instant; on a HARD quit
+  (`--quit-after`, editor stop) it flags + kills first. Python side: `indexer/
+  cancel.py` `stop_requested()` (env `SOUNDLIB_CANCEL`), polled between files by
+  analyse_audio/loudness/suggest_chops/fingerprint/embed/clap_embed — they save what
+  they have (~40 ms) and exit; **index.py instead aborts WITHOUT writing** (a partial
+  scan would drop every unvisited file from index.json). index.json and the .npz
+  writes are now atomic (temp + `os.replace`) so a killed job can't truncate them —
+  note `np.load` must be closed (`with`) before replacing that same path on Windows.
+  DON'T reintroduce `OS.execute` on a worker thread: it blocks uninterruptibly and
+  returns no pid, which is exactly what made close hang (see LESSONS_LEARNT).
 - **Audio is OUTSIDE the repo** in `S:\code\sound_lib_data`. Repo = code only.
   `.gitignore` also excludes audio extensions as a safeguard.
 - `index.json` is generated (gitignored); it carries `library_root`, so the
