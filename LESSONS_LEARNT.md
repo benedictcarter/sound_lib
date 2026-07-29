@@ -293,3 +293,42 @@ Button's minimum size; `LineEdit` needs `add_theme_constant_override(
 "minimum_character_width", 0)` (it reserves 4 em-spaces ≈ 53 px by default). If a
 widget "won't get smaller", print `get_combined_minimum_size()` before assuming
 the layout code is wrong.
+
+## Reordering Tree columns: the app must speak LOGICAL ids, the Tree SLOTS — and there is no third option
+Godot's `Tree` has no column-reorder API, so "drag a header to move a column" has
+to be faked by keeping the Tree's slots fixed and swapping *what goes in them*.
+The tempting shortcut — renumber the `COL_*` constants at runtime — is not
+available (they're consts, and half the app compares against them). So the only
+workable shape is an indirection pair, `_col_order[slot] -> logical` and
+`_col_slot[logical] -> slot`, with a hard rule: **everything above the Tree speaks
+logical ids; only the Tree call sites convert.** That means `set_text`,
+`set_editable`, `is_selected`, `get_item_area_rect`, `set_custom_bg_color` … all
+take `_col_slot[COL_X]` (66 call sites here — do it with a scripted regex pass,
+not by hand), and every value the Tree hands *back* — `get_column_at_position`,
+`get_edited_column`, `column_title_clicked` — goes through `_lcol(slot)` before
+anything compares it to a `COL_*`. Miss one in each direction and the bug is
+invisible until a column is actually moved: the app was correct for the identity
+permutation the whole time it was being written.
+
+Three things this cost real time on:
+- **Moving a column must re-populate the tree.** Widths/titles are per slot and
+  re-applied cheaply, but the *cell text already written into the old slots* does
+  not follow — without `_populate_tree()` the header moves and the data doesn't.
+- **A stale/short saved order is a data-loss bug, not a cosmetic one.** The order
+  is persisted; if a future build adds a column, the saved order is one short and
+  that column would simply never be drawn — every launch, permanently. So the
+  single writer (`_set_col_order`) de-dupes, drops out-of-range ids and appends
+  anything missing, i.e. it *repairs* rather than trusts. Verified by feeding the
+  app a deliberately corrupt `col_order` (`[17,0,3,3,99,-2,5]`) and checking it
+  came back a full permutation.
+- **Which cell you select is a semantic choice, not slot 0.** `it.select(0)`
+  selects whatever column now sits leftmost — and Del on an *editable* cell clears
+  it instead of deleting the file. Always select a known non-editable column
+  (`_col_slot[COL_FILENAME]`).
+
+Also: own BOTH ends of the header click. A press on a title arms a possible move
+and calls `accept_event()`; the sort is then run by *our* release handler. Sharing
+the gesture with the Tree's own `column_title_clicked` means the outcome depends on
+whether the engine emits it on press or release — and a drag that ends outside the
+control never sends a release at all, so `_process` has to notice the button came
+up (`Input.is_mouse_button_pressed`) and finish the drag itself.

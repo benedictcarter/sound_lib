@@ -138,6 +138,7 @@ const KW_MIN_LEN := 2       # ignore 1-char tokens
 const COL_DEFAULT_W := [460, 360, 56, 180, 140, 85, 92, 72, 42, 38, 78, 95, 58, 70, 78, 78, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
+const HDR_DRAG_START := 6.0  # px the mouse must travel before a title press becomes a MOVE
 
 # Gap analysis defaults (chosen from exploration; tunable live in the analyser).
 const DEF_SILENCE_DB := -60.0
@@ -536,6 +537,34 @@ class ColGrabber extends Control:
 			Vector2(cx + 3.0, cy), Vector2(cx + 7.0, cy - 3.0), Vector2(cx + 7.0, cy + 3.0)]), c)
 
 
+## The insertion marker shown while a column is being dragged to a new position:
+## a gold line at the boundary the column would land on, plus the column's name
+## riding next to the cursor. Mouse-ignored, so it never eats the drag itself.
+class ColDropMark extends Control:
+	var label := ""              # name of the column being moved
+	var label_x := 0.0           # cursor x (self-local), where the ghost label rides
+
+	func _draw() -> void:
+		var gold := Color(1.0, 0.82, 0.10)
+		draw_line(Vector2(1.0, 0.0), Vector2(1.0, size.y), gold, 3.0)
+		# little triangular caps top and bottom so the line reads as an insert point
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(1.0, 6.0), Vector2(-4.0, 0.0), Vector2(6.0, 0.0)]), gold)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(1.0, size.y - 6.0), Vector2(-4.0, size.y), Vector2(6.0, size.y)]), gold)
+		if label == "":
+			return
+		var font := get_theme_default_font()
+		var fs := get_theme_default_font_size()
+		var w := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		var x := label_x - 1.0 + 8.0                   # ghost sits to the right of the cursor
+		var r := Rect2(x - 4.0, size.y * 0.5 - 10.0, w + 8.0, 20.0)
+		draw_rect(r, Color(0.12, 0.12, 0.14, 0.92))
+		draw_rect(r, gold, false, 1.0)
+		draw_string(font, Vector2(x, size.y * 0.5 + 5.0), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, gold)
+
+
 ## Yellow border drawn over the row whose track is currently playing. Sits on top
 ## of the Tree (mouse-ignored) and re-queries the row rect each frame so it follows
 ## scrolling. `item` is set from _playing_item; cleared when nothing is playing.
@@ -856,7 +885,19 @@ var _hover_star: int = -1            # previewed star count under the cursor
 var _star_glyph_w: float = 0.0       # measured pixel width of one star glyph
 
 # column resizing (header divider drag)
-var _col_w: Array = []               # current width of each column
+var _col_w: Array = []               # current width of each column (by LOGICAL id)
+# Column ORDER — drag a header title sideways to move a column. The app addresses
+# columns by their LOGICAL id (the COL_* constants) everywhere; the Tree addresses
+# them by SLOT (left-to-right position). These two arrays are the ONLY place the
+# two spaces meet: cell writes go through _col_slot[COL_X], anything the Tree hands
+# back (a clicked title, get_column_at_position) comes back through _lcol().
+var _col_order: Array = range(COL_COUNT)   # slot -> logical column id
+var _col_slot: Array = range(COL_COUNT)    # logical column id -> slot
+var _drag_hdr_col: int = -1          # logical column being press-held in the header
+var _drag_hdr_x: float = 0.0         # where that press started (to pass a threshold)
+var _hdr_moving: int = -1            # logical column actually being dragged, else -1
+var _hdr_drop_slot: int = -1         # slot it would land in on release
+var _drop_mark: ColDropMark          # the insertion line drawn while dragging
 var _resize_col: int = -1            # column whose right divider is being dragged
 var _resize_start_x: float = 0.0
 var _resize_start_w: int = 0
@@ -984,6 +1025,10 @@ func _apply_view_prefs() -> void:
 	if _prefs.get("col_w") is Array and _prefs["col_w"].size() == COL_COUNT:
 		for c in COL_COUNT:
 			_col_w[c] = maxi(COL_MIN_W, int(_prefs["col_w"][c]))
+	# Order first: _apply_all_cols writes each column at its SLOT, and a saved
+	# order from an older build may be short or stale — _set_col_order repairs it.
+	if _prefs.get("col_order") is Array:
+		_set_col_order(_prefs["col_order"])
 	if _prefs.has("sort_col"):
 		_sort_col = clampi(int(_prefs["sort_col"]), 0, COL_COUNT - 1)
 		_sort_asc = bool(_prefs.get("sort_asc", true))
@@ -1005,6 +1050,7 @@ func _save_prefs() -> void:
 		"win_w": win.size.x, "win_h": win.size.y,
 		"win_x": win.position.x, "win_y": win.position.y,
 		"col_w": _col_w.duplicate(),
+		"col_order": _col_order.duplicate(),
 		"sort_col": _sort_col, "sort_asc": _sort_asc,
 		"search": _search.text if _search else "",
 		"autoplay": _autoplay.button_pressed if _autoplay else true,
@@ -1247,13 +1293,13 @@ func _build_ui() -> void:
 	_tree.select_mode = Tree.SELECT_MULTI
 	_tree.allow_reselect = true
 	_tree.allow_rmb_select = true          # so right-click emits item_mouse_selected (context menu)
-	# Column widths (resizable by dragging the dividers in the header row).
+	# Column widths (drag a divider in the header row) and order (drag a title
+	# sideways). Titles + widths are pushed per SLOT by _apply_all_cols below.
 	_col_w = COL_DEFAULT_W.duplicate()
-	for c in COL_COUNT:
-		_tree.set_column_title(c, COL_TITLES[c])
-		_tree.set_column_clip_content(c, true)
-		_tree.set_column_expand(c, false)
-		_tree.set_column_custom_minimum_width(c, _col_w[c])
+	_set_col_order(range(COL_COUNT))
+	for s in COL_COUNT:
+		_tree.set_column_clip_content(s, true)
+		_tree.set_column_expand(s, false)
 	_tree.column_title_clicked.connect(_on_title_clicked)
 	_tree.item_selected.connect(_on_row_selected)
 	_tree.multi_selected.connect(_on_multi_selected)   # SELECT_MULTI emits this
@@ -1298,6 +1344,13 @@ func _build_ui() -> void:
 		g.gui_input.connect(_on_grabber_input.bind(g))
 		add_child(g)
 		_grabbers.append(g)
+
+	# insertion marker for a column REORDER drag (drawn over the header; the drag
+	# itself is tracked in _on_tree_gui_input / _process)
+	_drop_mark = ColDropMark.new()
+	_drop_mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_drop_mark.visible = false
+	add_child(_drop_mark)
 
 	# right-click row context menu
 	_ctx_menu = PopupMenu.new()
@@ -1590,8 +1643,9 @@ func _layout_filter_header() -> void:
 	var h := _filter_header.size.y
 	var edge_cols := PackedInt32Array()              # columns that have a visible edge
 	var edge_xs := PackedFloat32Array()              # their right-edge x (tree/header-local)
-	for col in COL_COUNT:
-		var r := _tree.get_item_area_rect(first, col)   # exact column x + width
+	for s in COL_COUNT:                              # walk DISPLAY order, left to right
+		var col := _lcol(s)
+		var r := _tree.get_item_area_rect(first, s)     # exact column x + width
 		var ctrl: Variant = _colfilters.get(col)
 		if ctrl != null:
 			# leave an 8px gap at the right (the divider side) so the grabber strip
@@ -1624,6 +1678,19 @@ func _layout_filter_header() -> void:
 		_grabbers[gi].visible = false
 		_grabbers[gi].col = -1
 		gi += 1
+
+	# insertion marker + ghost name while a column is being dragged to a new spot
+	if _drop_mark != null:
+		var dragging := _hdr_moving >= 0 and _hdr_drop_slot >= 0
+		if dragging:
+			var mx := fhg.x + _drop_index_x(_hdr_drop_slot) - origin.x
+			_drop_mark.position = Vector2(mx - 1.0, top)
+			_drop_mark.size = Vector2(2.0, span)
+			_drop_mark.label = COL_TITLES[_hdr_moving]
+			_drop_mark.label_x = _tree.get_local_mouse_position().x + fhg.x - origin.x - mx
+			_drop_mark.queue_redraw()
+		if _drop_mark.visible != dragging:
+			_drop_mark.visible = dragging
 
 
 # A column's numeric value for filtering — NaN when the row has no value there
@@ -2569,9 +2636,19 @@ func _sort_filtered() -> void:
 	)
 
 
+# The Tree's own title-click signal. Header clicks are normally taken over in
+# _on_tree_gui_input (so a press can turn into a reorder drag instead), so this
+# is a fallback for any click that still reaches the Tree; `col` is a SLOT.
 func _on_title_clicked(col: int, _mouse_btn: int) -> void:
 	if _suppress_title_click:                 # a divider drag, not a sort click
 		_suppress_title_click = false
+		return
+	_sort_by_col(_lcol(col))
+
+
+# Sort by a LOGICAL column; clicking the current sort column flips direction.
+func _sort_by_col(col: int) -> void:
+	if col < 0:
 		return
 	if col == _sort_col:
 		_sort_asc = not _sort_asc
@@ -2595,39 +2672,41 @@ func _populate_tree() -> void:
 		var rec: Dictionary = _filtered[i]
 		var odd := (i & 1) == 1                     # zebra: shade every other row
 		var it := _tree.create_item(root)
-		it.set_text(COL_FILENAME, String(rec.get("filename", "")))
+		it.set_text(_col_slot[COL_FILENAME], String(rec.get("filename", "")))
 		var dir := _directory_of(rec)
-		it.set_text(COL_DIRECTORY, dir)
-		it.set_tooltip_text(COL_DIRECTORY, dir)     # full path clips in the cell; hover to read
-		it.set_text(COL_LIBRARY, String(rec.get("library", "")))
-		it.set_text(COL_SUPPLIER, String(rec.get("supplier", "")))
-		it.set_text(COL_BUNDLE, _short_bundle(String(rec.get("bundle", ""))))
-		it.set_text(COL_DURATION, _fmt_dur(rec.get("duration")))
-		it.set_text(COL_RATE, _fmt_rate(rec.get("sample_rate")))
-		it.set_text(COL_BIT, "" if rec.get("bit_depth") == null else str(int(rec.get("bit_depth"))))
-		it.set_text(COL_CH, "" if rec.get("channels") == null else str(int(rec.get("channels"))))
-		it.set_text(COL_SIZE, _fmt_size(rec.get("size")))
+		it.set_text(_col_slot[COL_DIRECTORY], dir)
+		it.set_tooltip_text(_col_slot[COL_DIRECTORY], dir)     # full path clips in the cell; hover to read
+		it.set_text(_col_slot[COL_LIBRARY], String(rec.get("library", "")))
+		it.set_text(_col_slot[COL_SUPPLIER], String(rec.get("supplier", "")))
+		it.set_text(_col_slot[COL_BUNDLE], _short_bundle(String(rec.get("bundle", ""))))
+		it.set_text(_col_slot[COL_DURATION], _fmt_dur(rec.get("duration")))
+		it.set_text(_col_slot[COL_RATE], _fmt_rate(rec.get("sample_rate")))
+		it.set_text(_col_slot[COL_BIT], "" if rec.get("bit_depth") == null else str(int(rec.get("bit_depth"))))
+		it.set_text(_col_slot[COL_CH], "" if rec.get("channels") == null else str(int(rec.get("channels"))))
+		it.set_text(_col_slot[COL_SIZE], _fmt_size(rec.get("size")))
 		var sc: Variant = _sem_scores.get(String(rec.get("path", "")))
-		it.set_text(COL_SCORE, "%.3f" % float(sc) if sc != null else "")
+		it.set_text(_col_slot[COL_SCORE], "%.3f" % float(sc) if sc != null else "")
 		_apply_userdata_cells(it, rec)
 		_apply_chop_cells(it, rec)
 		_apply_loudness_cell(it, rec)
 		for c in [COL_SCORE, COL_DURATION, COL_RATE, COL_BIT, COL_CH, COL_SIZE, COL_PLAYS,
 				COL_CHOP_DB, COL_CHOP_GAP, COL_CHOP_SND, COL_CHOP_N,
 				COL_LEVEL, COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB]:
-			it.set_text_alignment(c, HORIZONTAL_ALIGNMENT_RIGHT)
+			it.set_text_alignment(_col_slot[c], HORIZONTAL_ALIGNMENT_RIGHT)
 		# row background: red if the player can't play it directly, else zebra
-		# stripe + editable-cell tint, in one pass over the columns
+		# stripe + editable-cell tint, in one pass over the columns. (The tint is
+		# per COLUMN, so it walks logical ids and paints their slots.)
 		var playable := _is_playable(rec)
 		for c in range(COL_COUNT):
+			var slot: int = _col_slot[c]
 			if not playable:
-				it.set_custom_bg_color(c, UNSUPPORTED_BG_ODD if odd else UNSUPPORTED_BG)
+				it.set_custom_bg_color(slot, UNSUPPORTED_BG_ODD if odd else UNSUPPORTED_BG)
 			elif EDITABLE_COLS.has(c):
-				it.set_custom_bg_color(c, EDIT_CELL_BG_ODD if odd else EDIT_CELL_BG)
+				it.set_custom_bg_color(slot, EDIT_CELL_BG_ODD if odd else EDIT_CELL_BG)
 			elif odd:
-				it.set_custom_bg_color(c, ZEBRA_BG)
+				it.set_custom_bg_color(slot, ZEBRA_BG)
 		if not playable:
-			it.set_tooltip_text(COL_FILENAME,
+			it.set_tooltip_text(_col_slot[COL_FILENAME],
 				"The player can't play this file directly (non-WAV format, or a WAV with " \
 				+ ">2 channels). Right-click -> Convert to WAV, or just press Play to decode " \
 				+ "and audition it.")
@@ -2637,8 +2716,8 @@ func _populate_tree() -> void:
 
 func _apply_loudness_cell(it: TreeItem, rec: Dictionary) -> void:
 	var r := _loudness_rms(rec)
-	it.set_text(COL_LOUDNESS, "" if is_nan(r) else "%.1f dB" % r)
-	it.set_tooltip_text(COL_LOUDNESS,
+	it.set_text(_col_slot[COL_LOUDNESS], "" if is_nan(r) else "%.1f dB" % r)
+	it.set_tooltip_text(_col_slot[COL_LOUDNESS],
 		"Measured original loudness (LUFS, integrated). Run 'Analyse audio' to fill.")
 	_apply_final_cell(it, rec)
 
@@ -2652,29 +2731,29 @@ func _final_db(rec: Variant) -> float:
 
 func _apply_final_cell(it: TreeItem, rec: Dictionary) -> void:
 	var f := _final_db(rec)
-	it.set_text(COL_FINAL_DB, "" if is_nan(f) else "%.1f dB" % f)
-	it.set_tooltip_text(COL_FINAL_DB,
+	it.set_text(_col_slot[COL_FINAL_DB], "" if is_nan(f) else "%.1f dB" % f)
+	it.set_tooltip_text(_col_slot[COL_FINAL_DB],
 		"Resulting loudness when played = orig dB + Gain dB. This is what the Level " \
 		+ "is steering. Read-only.")
 
 
 func _apply_userdata_cells(it: TreeItem, rec: Dictionary) -> void:
 	var rating := _get_rating(rec)
-	it.set_text(COL_RATING, _stars(rating))
+	it.set_text(_col_slot[COL_RATING], _stars(rating))
 	var plays := _get_plays(rec)
-	it.set_text(COL_PLAYS, "" if plays == 0 else str(plays))
-	it.set_text(COL_TAGS, _get_tags(rec))
-	it.set_editable(COL_TAGS, true)            # double-click to edit
-	it.set_tooltip_text(COL_TAGS, "Double-click to edit. Separate keywords with spaces or commas.")
-	it.set_text(COL_LEVEL, _fmt_level(_get_level(rec)))
-	it.set_editable(COL_LEVEL, true)
-	it.set_tooltip_text(COL_LEVEL,
+	it.set_text(_col_slot[COL_PLAYS], "" if plays == 0 else str(plays))
+	it.set_text(_col_slot[COL_TAGS], _get_tags(rec))
+	it.set_editable(_col_slot[COL_TAGS], true)            # double-click to edit
+	it.set_tooltip_text(_col_slot[COL_TAGS], "Double-click to edit. Separate keywords with spaces or commas.")
+	it.set_text(_col_slot[COL_LEVEL], _fmt_level(_get_level(rec)))
+	it.set_editable(_col_slot[COL_LEVEL], true)
+	it.set_tooltip_text(_col_slot[COL_LEVEL],
 		"How loud you want this to play, on a 0-10 perceptual scale (10 = loudest, " \
 		+ "5 = half as loud, 0 = silence). The app sets Gain dB to hit it, capped so " \
 		+ "it never clips. Same number = equally loud (needs measured Loudness).")
-	it.set_text(COL_GAIN_DB, _fmt_gain(_get_gain_db(rec)))
-	it.set_editable(COL_GAIN_DB, true)
-	it.set_tooltip_text(COL_GAIN_DB,
+	it.set_text(_col_slot[COL_GAIN_DB], _fmt_gain(_get_gain_db(rec)))
+	it.set_editable(_col_slot[COL_GAIN_DB], true)
+	it.set_tooltip_text(_col_slot[COL_GAIN_DB],
 		"Applied playback gain in dB (auto-filled from Level when set, else " \
 		+ "manual). Negative = quieter (no clipping); positive may clip. Blank = 0.")
 
@@ -2739,7 +2818,7 @@ func _on_tree_mouse_selected(pos: Vector2, mouse_btn: int) -> void:
 	if it == null:
 		return
 	var rec: Variant = it.get_metadata(0)
-	var col := _tree.get_column_at_position(pos)
+	var col := _lcol(_tree.get_column_at_position(pos))
 	_last_click_col = col
 	if col == COL_RATING:
 		if mouse_btn == MOUSE_BUTTON_RIGHT:
@@ -2766,10 +2845,10 @@ func _on_tree_item_edited() -> void:
 	var it := _tree.get_edited()
 	if it == null:
 		return
-	var col := _tree.get_edited_column()
+	var col := _lcol(_tree.get_edited_column())
 	var rec: Variant = it.get_metadata(0)
 	if col == COL_TAGS:
-		_set_tags(rec, it.get_text(COL_TAGS))
+		_set_tags(rec, it.get_text(_col_slot[COL_TAGS]))
 	elif col == COL_CHOP_DB or col == COL_CHOP_GAP or col == COL_CHOP_SND:
 		_on_chop_edited(rec, it, col)
 	elif col == COL_GAIN_DB:
@@ -2791,7 +2870,7 @@ func _begin_resize(col: int) -> void:
 	_resize_start_x = get_global_mouse_position().x
 	# start from the ACTUAL drawn width, not the stored one — if they ever drift
 	# (an old prefs file, a title floor) the drag would otherwise jump.
-	_resize_start_w = _tree.get_column_width(col)
+	_resize_start_w = _tree.get_column_width(_col_slot[col])
 	_col_w[col] = _resize_start_w
 	_suppress_title_click = true                   # this drag isn't a sort click
 
@@ -2809,6 +2888,7 @@ func _begin_resize(col: int) -> void:
 func _apply_col(c: int) -> void:
 	var w: int = maxi(COL_MIN_W, int(_col_w[c]))
 	_col_w[c] = w
+	var s: int = _col_slot[c]                      # where the Tree draws this column
 	var arrow := ""
 	if c == _sort_col:
 		arrow = "  v" if _sort_asc else "  ^"
@@ -2816,7 +2896,7 @@ func _apply_col(c: int) -> void:
 	# With the custom minimum at 1, get_column_width() IS the title floor — the
 	# Tree measures it with its own font, live in the same frame. Ask it directly
 	# rather than re-deriving the engine's font/padding maths.
-	_tree.set_column_custom_minimum_width(c, 1)
+	_tree.set_column_custom_minimum_width(s, 1)
 	var cands: Array = [base + arrow]
 	for n in range(base.length() - 1, 0, -1):
 		cands.append(base.substr(0, n) + "…" + arrow)
@@ -2825,10 +2905,10 @@ func _apply_col(c: int) -> void:
 	cands.append("…")
 	cands.append("")                               # floor 8 px: always fits
 	for cand in cands:
-		_tree.set_column_title(c, cand)
-		if _tree.get_column_width(c) <= w:
+		_tree.set_column_title(s, cand)
+		if _tree.get_column_width(s) <= w:
 			break
-	_tree.set_column_custom_minimum_width(c, w)
+	_tree.set_column_custom_minimum_width(s, w)
 
 
 # Re-apply every column's width + (elided, arrowed) title. Cheap: a handful of
@@ -2836,6 +2916,70 @@ func _apply_col(c: int) -> void:
 func _apply_all_cols() -> void:
 	for c in COL_COUNT:
 		_apply_col(c)
+
+
+# ---------------------------------------------------------------------------
+#  Column ORDER: logical id <-> Tree slot
+# ---------------------------------------------------------------------------
+
+# The logical column the Tree draws in `slot`, or -1 (a -1 slot stays -1, so
+# get_column_at_position's "nowhere" answer survives the conversion).
+func _lcol(slot: int) -> int:
+	return int(_col_order[slot]) if slot >= 0 and slot < _col_order.size() else -1
+
+
+# Adopt a display order (slot -> logical id) and push it to the Tree. Anything
+# missing/duplicated/out of range is repaired by appending the columns that the
+# order left out, so a hand-edited or stale prefs file can never lose a column.
+func _set_col_order(order: Array) -> void:
+	var seen := {}
+	var clean: Array = []
+	for v in order:
+		var c := int(v)
+		if c >= 0 and c < COL_COUNT and not seen.has(c):
+			seen[c] = true
+			clean.append(c)
+	for c in COL_COUNT:
+		if not seen.has(c):
+			clean.append(c)                        # a column the order forgot
+	_col_order = clean
+	_col_slot = []
+	_col_slot.resize(COL_COUNT)
+	for s in COL_COUNT:
+		_col_slot[int(_col_order[s])] = s
+
+
+# The order that results from lifting `logical` out and re-inserting it at the
+# INSERT INDEX `before` (0..COL_COUNT, what _drop_index_at_x returns — "in front
+# of the column now in that slot"). Returns [] when nothing would move. Pure, so
+# the index arithmetic is testable without a live Tree.
+func _order_after_move(logical: int, before: int) -> Array:
+	var from_slot: int = _col_slot[logical]
+	var to: int = clampi(before, 0, COL_COUNT)
+	if to > from_slot:
+		to -= 1                                    # indices shift once it's lifted out
+	if to == from_slot:
+		return []
+	var order: Array = _col_order.duplicate()
+	order.remove_at(from_slot)
+	order.insert(to, logical)
+	return order
+
+
+# Move a column to insert index `before`, then rebuild the view — titles/widths
+# per slot, cells rewritten into their new slots — and remember the order.
+# No-op if nothing actually moves.
+func _move_column(logical: int, before: int) -> void:
+	var order: Array = _order_after_move(logical, before)
+	if order.is_empty():
+		return
+	_set_col_order(order)
+	_apply_all_cols()
+	_populate_tree()                               # cells must move to the new slots
+	_layout_filter_header()
+	_save_prefs()
+	_status_label.text = "Moved column '%s' to position %d." % [
+		COL_TITLES[logical], int(_col_slot[logical]) + 1]
 
 
 # A grabber strip was pressed -> begin resizing its column.
@@ -2868,17 +3012,69 @@ func _divider_at(pos: Vector2) -> int:
 	if root:
 		first = root.get_first_child()
 	if first != null:
-		for c in range(COL_COUNT):
-			if absf(pos.x - _tree.get_item_area_rect(first, c).end.x) <= RESIZE_GRAB:
-				return c
+		for s in range(COL_COUNT):
+			if absf(pos.x - _tree.get_item_area_rect(first, s).end.x) <= RESIZE_GRAB:
+				return _lcol(s)
 		return -1
-	# fallback (empty table): sum the stored widths
+	# fallback (empty table): sum the stored widths, in DISPLAY order
 	var x := -float(_tree.get_scroll().x)
-	for c in range(COL_COUNT):
-		x += _col_w[c]
+	for s in range(COL_COUNT):
+		x += _col_w[_lcol(s)]
 		if absf(pos.x - x) <= RESIZE_GRAB:
-			return c
+			return _lcol(s)
 	return -1
+
+
+# The display SLOT under x in the header (its column band), else -1.
+func _slot_at_x(x: float) -> int:
+	var root := _tree.get_root()
+	var first: TreeItem = root.get_first_child() if root else null
+	if first == null:
+		return -1
+	for s in range(COL_COUNT):
+		var r := _tree.get_item_area_rect(first, s)
+		if x >= r.position.x and x < r.end.x:
+			return s
+	return -1
+
+
+# Where a drop at x would INSERT: an index in [0, COL_COUNT] meaning "before the
+# column currently in that slot" (COL_COUNT = past the last one). Each column
+# claims its own half — cross a column's midpoint and the marker jumps its edge.
+func _drop_index_at_x(x: float) -> int:
+	var root := _tree.get_root()
+	var first: TreeItem = root.get_first_child() if root else null
+	if first == null:
+		return -1
+	for s in range(COL_COUNT):
+		var r := _tree.get_item_area_rect(first, s)
+		if x < r.position.x + r.size.x * 0.5:
+			return s
+	return COL_COUNT
+
+
+# The x (tree-local) of the boundary an insert index sits on: the left edge of
+# that slot, or the right edge of the last column for "at the end".
+func _drop_index_x(idx: int) -> float:
+	var root := _tree.get_root()
+	var first: TreeItem = root.get_first_child() if root else null
+	if first == null:
+		return 0.0
+	if idx >= COL_COUNT:
+		return _tree.get_item_area_rect(first, COL_COUNT - 1).end.x
+	return _tree.get_item_area_rect(first, maxi(idx, 0)).position.x
+
+
+# Drop all header-drag state and the marker. Called on release, and from _process
+# if the button came up outside the Tree (which never sends us the release).
+func _end_hdr_drag() -> void:
+	_hdr_moving = -1
+	_hdr_drop_slot = -1
+	_drag_hdr_col = -1
+	if _drop_mark != null:
+		_drop_mark.visible = false
+	if _tree != null:
+		_tree.mouse_default_cursor_shape = Control.CURSOR_ARROW
 
 
 func _on_tree_gui_input(event: InputEvent) -> void:
@@ -2939,11 +3135,12 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		var hit := _tree.get_item_at_position(event.position)
 		if hit != null and typeof(hit.get_metadata(0)) == TYPE_DICTIONARY \
-				and _tree.get_column_at_position(event.position) != COL_RATING:
+				and _lcol(_tree.get_column_at_position(event.position)) != COL_RATING:
 			var rec: Dictionary = hit.get_metadata(0)
 			if not _selected_paths().has(String(rec.get("path", ""))):
 				_tree.deselect_all()               # clicked an unselected row -> pick just it
-				hit.select(0)
+				hit.select(_col_slot[COL_FILENAME])   # a NON-editable cell: Del must delete
+				                                      # the file, not clear a Tags cell
 			_ctx_rec = rec
 			_refresh_star_buttons(rec)
 			_ctx_menu.reset_size()
@@ -2956,13 +3153,24 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 			if c >= 0:
 				_begin_resize(c)                   # tracking continues in _process
 				_tree.accept_event()
+			elif event.position.y <= _header_height():
+				# On a TITLE (not a divider — the grabber strips cover those): arm a
+				# column-reorder drag and TAKE OVER the click. Nothing moves until the
+				# mouse travels HDR_DRAG_START px; a press that never does is a sort
+				# click, which we run ourselves on release (see below). Owning both
+				# ends means the outcome can't depend on whether the Tree emits
+				# column_title_clicked on the press or the release.
+				_drag_hdr_col = _lcol(_slot_at_x(event.position.x))
+				_drag_hdr_x = event.position.x
+				if _drag_hdr_col >= 0:
+					_tree.accept_event()
 			elif event.position.y > _header_height():
 				var it := _tree.get_item_at_position(event.position)
 				if it != null:
 					_drag_sel = true
 					_drag_anchor = it
 					_drag_last = it
-					_drag_col = maxi(0, _tree.get_column_at_position(event.position))
+					_drag_col = _lcol(maxi(0, _tree.get_column_at_position(event.position)))
 					_drag_additive = event.shift_pressed or event.ctrl_pressed
 					_drag_toggle = event.ctrl_pressed
 					if _drag_additive:
@@ -2975,6 +3183,22 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 						_apply_drag_range(it, it)
 						_tree.accept_event()
 		else:                                  # released
+			# A column-reorder drag ends here: drop it where the marker is. The press
+			# that started it also set _suppress_title_click, so it doesn't sort too.
+			if _hdr_moving >= 0:
+				var moved := _hdr_moving
+				var to := _hdr_drop_slot
+				_end_hdr_drag()
+				_tree.accept_event()
+				if to >= 0:
+					_move_column(moved, to)
+				return
+			if _drag_hdr_col >= 0:                 # pressed a title but never dragged
+				var sort_col := _drag_hdr_col      # -> it was a sort click
+				_drag_hdr_col = -1
+				_tree.accept_event()
+				_sort_by_col(sort_col)
+				return
 			# If a real drag happened (moved to another row), accept the release so the
 			# Tree doesn't collapse the range OR open the inline editor on the final
 			# cell. A plain click (no move) falls through and still plays.
@@ -2988,17 +3212,31 @@ func _on_tree_gui_input(event: InputEvent) -> void:
 			_drag_base = []
 			_drag_base_col = {}
 	elif event is InputEventMouseMotion:
-		if _drag_sel and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+		var held: bool = (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
+		# a header press that has moved far enough becomes a column-reorder drag
+		if held and _drag_hdr_col >= 0 and _resize_col < 0:
+			if _hdr_moving < 0 and absf(event.position.x - _drag_hdr_x) >= HDR_DRAG_START:
+				_hdr_moving = _drag_hdr_col
+				_suppress_title_click = true       # this drag isn't a sort click
+			if _hdr_moving >= 0:
+				_hdr_drop_slot = _drop_index_at_x(event.position.x)
+				_tree.mouse_default_cursor_shape = Control.CURSOR_MOVE
+				_tree.accept_event()
+				return
+		if _drag_sel and held:
 			var it := _tree.get_item_at_position(event.position)
 			if it != null and it != _drag_last and _drag_anchor != null:
 				_drag_last = it
 				_apply_drag_range(_drag_anchor, it)
 				_tree.accept_event()
-		else:
-			# show the horizontal-resize cursor when hovering a divider
+		elif not held:
+			# hovering: resize cursor over a divider, move cursor over a draggable title
+			var over_div := _divider_at(event.position) >= 0
+			var over_title: bool = not over_div and event.position.y <= _header_height() \
+				and _slot_at_x(event.position.x) >= 0
 			_tree.mouse_default_cursor_shape = (
-				Control.CURSOR_HSIZE if _divider_at(event.position) >= 0
-				else Control.CURSOR_ARROW)
+				Control.CURSOR_HSIZE if over_div
+				else (Control.CURSOR_MOVE if over_title else Control.CURSOR_ARROW))
 
 
 # Snapshot the current cell selection so a modifier-drag can preserve it.
@@ -3007,10 +3245,10 @@ func _snapshot_selection() -> void:
 	_drag_base_col = {}
 	var it := _tree.get_next_selected(null)
 	while it != null:
-		var col := 0
-		for cc in COL_COUNT:
-			if it.is_selected(cc):
-				col = cc
+		var col := 0                               # SLOT of the selected cell
+		for s in COL_COUNT:
+			if it.is_selected(s):
+				col = s
 				break
 		_drag_base.append([it, col])
 		_drag_base_col[it] = col
@@ -3051,9 +3289,9 @@ func _apply_drag_range(a: TreeItem, b: TreeItem) -> void:
 				pair[0].select(pair[1])
 	for it in _rows_between(a, b):
 		if _drag_toggle and _drag_base_col.has(it):
-			it.deselect(_drag_base_col[it])    # was selected -> toggle off
+			it.deselect(_drag_base_col[it])    # (a slot, snapshotted as drawn)
 		else:
-			it.select(_drag_col)
+			it.select(_col_slot[_drag_col])
 
 
 ## Which star (1-5) the x position falls on, measured against the actual drawn
@@ -3063,7 +3301,7 @@ func _star_at(item: TreeItem, x: float) -> int:
 		var font := _tree.get_theme_font("font")
 		var fsize := _tree.get_theme_font_size("font_size")
 		_star_glyph_w = font.get_string_size("★", HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x
-	var rect := _tree.get_item_area_rect(item, COL_RATING)
+	var rect := _tree.get_item_area_rect(item, _col_slot[COL_RATING])
 	var ml := 0
 	if _tree.has_theme_constant("inner_item_margin_left"):
 		ml = _tree.get_theme_constant("inner_item_margin_left")
@@ -3077,7 +3315,7 @@ func _update_rating_hover() -> void:
 	var item: TreeItem = null
 	var star := -1
 	if Rect2(Vector2.ZERO, _tree.size).has_point(lp) \
-			and _tree.get_column_at_position(lp) == COL_RATING:
+			and _lcol(_tree.get_column_at_position(lp)) == COL_RATING:
 		item = _tree.get_item_at_position(lp)
 		if item != null:
 			star = _star_at(item, lp.x)
@@ -3088,13 +3326,13 @@ func _update_rating_hover() -> void:
 	_hover_item = item
 	_hover_star = star
 	if item != null:
-		item.set_text(COL_RATING, _stars(star))
-		item.set_custom_color(COL_RATING, Color(1.0, 0.82, 0.2))
+		item.set_text(_col_slot[COL_RATING], _stars(star))
+		item.set_custom_color(_col_slot[COL_RATING], Color(1.0, 0.82, 0.2))
 
 
 func _restore_rating_cell(item: TreeItem) -> void:
-	item.clear_custom_color(COL_RATING)
-	item.set_text(COL_RATING, _stars(_get_rating(item.get_metadata(0))))
+	item.clear_custom_color(_col_slot[COL_RATING])
+	item.set_text(_col_slot[COL_RATING], _stars(_get_rating(item.get_metadata(0))))
 
 
 func _selected_rec() -> Variant:
@@ -3557,6 +3795,14 @@ func _process(_delta: float) -> void:
 				_apply_col(_resize_col)            # width + elided title, exact
 		else:
 			_resize_col = -1
+	# A header-move drag whose button came up OUTSIDE the Tree never sends us the
+	# release, so commit (or disarm) it here off the global button state.
+	if _drag_hdr_col >= 0 and not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		var moved := _hdr_moving
+		var to := _hdr_drop_slot
+		_end_hdr_drag()
+		if moved >= 0 and to >= 0:
+			_move_column(moved, to)
 	_layout_filter_header()                        # keep filters aligned over columns
 	# playback cursor + play dot on the visualiser, when the loaded file is the one
 	# shown in the analyser (playing OR paused). For a chops/loop PREVIEW the player
@@ -3726,14 +3972,14 @@ func _fmt_level(v: float) -> String:
 func _on_gain_db_edited(rec: Variant, it: TreeItem) -> void:
 	if typeof(rec) != TYPE_DICTIONARY:
 		return
-	var txt := it.get_text(COL_GAIN_DB).strip_edges()
+	var txt := it.get_text(_col_slot[COL_GAIN_DB]).strip_edges()
 	if txt != "" and not txt.is_valid_float():
 		_status_label.text = "Gain dB must be a number (got \"%s\")." % txt
-		it.set_text(COL_GAIN_DB, _fmt_gain(_get_gain_db(rec)))      # revert
+		it.set_text(_col_slot[COL_GAIN_DB], _fmt_gain(_get_gain_db(rec)))      # revert
 		return
 	var v := clampf(0.0 if txt == "" else txt.to_float(), GAIN_DB_MIN, GAIN_DB_MAX)
 	_set_userdata(rec, "gain_db", v)
-	it.set_text(COL_GAIN_DB, _fmt_gain(v))
+	it.set_text(_col_slot[COL_GAIN_DB], _fmt_gain(v))
 	_apply_final_cell(it, rec)
 	if v > 0.0:
 		_status_label.text = "Gain dB +%s boosts above the file's level and may clip." % str(snappedf(v, 0.1))
@@ -3788,7 +4034,7 @@ func _apply_target_to_gain(rec: Variant, it: TreeItem) -> int:
 	ud["gain_db"] = g
 	_userdata[key] = ud
 	if it != null and is_instance_valid(it):
-		it.set_text(COL_GAIN_DB, _fmt_gain(g))
+		it.set_text(_col_slot[COL_GAIN_DB], _fmt_gain(g))
 		_apply_final_cell(it, rec)
 	if rec == _playing_rec:
 		_play_gain_db = g
@@ -3802,25 +4048,25 @@ func _on_level_edited(rec: Variant, it: TreeItem) -> void:
 	if typeof(rec) != TYPE_DICTIONARY:
 		return
 	var key := String(rec.get("path", ""))
-	var txt := it.get_text(COL_LEVEL).strip_edges()
+	var txt := it.get_text(_col_slot[COL_LEVEL]).strip_edges()
 	if txt == "":
 		var u: Dictionary = _userdata.get(key, {})  # clear level; leave Gain as-is
 		u.erase("level")
 		u.erase("target_db")
 		_userdata[key] = u
 		_save_userdata()
-		it.set_text(COL_LEVEL, "")
+		it.set_text(_col_slot[COL_LEVEL], "")
 		return
 	if not txt.is_valid_float():
 		_status_label.text = "Level must be a number 0-10 (got \"%s\")." % txt
-		it.set_text(COL_LEVEL, _fmt_level(_get_level(rec)))
+		it.set_text(_col_slot[COL_LEVEL], _fmt_level(_get_level(rec)))
 		return
 	var lvl := clampf(txt.to_float(), 0.0, LEVEL_MAX)
 	var ud: Dictionary = _userdata.get(key, {})
 	ud["level"] = lvl
 	ud.erase("target_db")                       # supersede any legacy entry
 	_userdata[key] = ud
-	it.set_text(COL_LEVEL, _fmt_level(lvl))
+	it.set_text(_col_slot[COL_LEVEL], _fmt_level(lvl))
 	var r := _apply_target_to_gain(rec, it)
 	_save_userdata()                            # persist level + recomputed gain
 	if r == -1:
@@ -3857,7 +4103,7 @@ func _selected_edit_col() -> int:
 	for c in SEL_EDIT_COLS:
 		var it := _tree.get_next_selected(null)
 		while it != null:
-			if it.is_selected(c):
+			if it.is_selected(_col_slot[c]):
 				return c
 			it = _tree.get_next_selected(it)
 	return -1
@@ -3867,7 +4113,7 @@ func _selected_items_in_col(col: int) -> Array:
 	var out: Array = []
 	var it := _tree.get_next_selected(null)
 	while it != null:
-		if it.is_selected(col) and typeof(it.get_metadata(0)) == TYPE_DICTIONARY:
+		if it.is_selected(_col_slot[col]) and typeof(it.get_metadata(0)) == TYPE_DICTIONARY:
 			out.append(it)
 		it = _tree.get_next_selected(it)
 	return out
@@ -3899,7 +4145,7 @@ func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
 			var ud: Dictionary = _userdata.get(key, {})
 			ud["tags"] = t
 			_userdata[key] = ud
-			it.set_text(COL_TAGS, t)
+			it.set_text(_col_slot[COL_TAGS], t)
 			return true
 		COL_GAIN_DB:
 			var s := raw.strip_edges()
@@ -3909,7 +4155,7 @@ func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
 			var ud2: Dictionary = _userdata.get(key, {})
 			ud2["gain_db"] = v
 			_userdata[key] = ud2
-			it.set_text(COL_GAIN_DB, _fmt_gain(v))
+			it.set_text(_col_slot[COL_GAIN_DB], _fmt_gain(v))
 			_apply_final_cell(it, rec)
 			if rec == _playing_rec:                 # live-apply to the current track
 				_play_gain_db = v
@@ -3922,7 +4168,7 @@ func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
 				ud3.erase("level")                  # clear the level
 				ud3.erase("target_db")
 				_userdata[key] = ud3
-				it.set_text(COL_LEVEL, "")
+				it.set_text(_col_slot[COL_LEVEL], "")
 				return true
 			if not s2.is_valid_float():
 				return false
@@ -3930,7 +4176,7 @@ func _cell_set(rec: Variant, it: TreeItem, col: int, raw: String) -> bool:
 			ud3["level"] = lvl
 			ud3.erase("target_db")
 			_userdata[key] = ud3
-			it.set_text(COL_LEVEL, _fmt_level(lvl))
+			it.set_text(_col_slot[COL_LEVEL], _fmt_level(lvl))
 			_apply_target_to_gain(rec, it)          # recompute Gain dB (if measured)
 			return true
 	return false
@@ -3947,7 +4193,7 @@ func _copy_selected_cells() -> void:
 	if col < 0:
 		return
 	var it := _tree.get_selected()
-	if it == null or not it.is_selected(col):
+	if it == null or not it.is_selected(_col_slot[col]):
 		var items := _selected_items_in_col(col)
 		it = items[0] if not items.is_empty() else null
 	if it == null:
@@ -3989,7 +4235,7 @@ func _begin_cell_edit(col: int, first: String) -> void:
 	_cell_edit_col = col
 	_cell_edit_orig = {}
 	for it in _cell_edit_items:
-		_cell_edit_orig[it] = it.get_text(col)
+		_cell_edit_orig[it] = it.get_text(_col_slot[col])
 	_cell_edit_active = true
 	_cell_edit_buf = first
 	_cell_edit_live()
@@ -4000,7 +4246,7 @@ func _begin_cell_edit(col: int, first: String) -> void:
 func _cell_edit_live() -> void:
 	for it in _cell_edit_items:
 		if is_instance_valid(it):
-			it.set_text(_cell_edit_col, _cell_edit_buf)
+			it.set_text(_col_slot[_cell_edit_col], _cell_edit_buf)
 
 
 func _commit_cell_edit() -> void:
@@ -4018,7 +4264,7 @@ func _commit_cell_edit() -> void:
 		if _cell_set(it.get_metadata(0), it, col, raw):
 			n += 1
 		else:
-			it.set_text(col, String(orig.get(it, "")))   # revert invalid value
+			it.set_text(_col_slot[col], String(orig.get(it, "")))   # revert invalid value
 	if n > 0:
 		_save_after_edit(col)
 	_tree.deselect_all()
@@ -4028,7 +4274,7 @@ func _commit_cell_edit() -> void:
 func _cancel_cell_edit() -> void:
 	for it in _cell_edit_items:
 		if is_instance_valid(it):
-			it.set_text(_cell_edit_col, String(_cell_edit_orig.get(it, "")))
+			it.set_text(_col_slot[_cell_edit_col], String(_cell_edit_orig.get(it, "")))
 	_end_cell_edit()
 	_status_label.text = "Edit cancelled."
 
@@ -4149,19 +4395,19 @@ func _apply_chop_cells(it: TreeItem, rec: Dictionary) -> void:
 			snd_txt = "%.3f" % float(c.get("min_sound_s", DEF_MIN_SOUND_S))
 		if c.has("chops"):
 			n_txt = str(int(c["chops"]))      # continuous files report 1 piece
-	it.set_text(COL_CHOP_DB, db_txt)
-	it.set_text(COL_CHOP_GAP, gap_txt)
-	it.set_text(COL_CHOP_SND, snd_txt)
-	it.set_text(COL_CHOP_N, n_txt)
-	it.set_editable(COL_CHOP_DB, true)
-	it.set_editable(COL_CHOP_GAP, true)
-	it.set_editable(COL_CHOP_SND, true)
-	it.set_tooltip_text(COL_CHOP_DB,
+	it.set_text(_col_slot[COL_CHOP_DB], db_txt)
+	it.set_text(_col_slot[COL_CHOP_GAP], gap_txt)
+	it.set_text(_col_slot[COL_CHOP_SND], snd_txt)
+	it.set_text(_col_slot[COL_CHOP_N], n_txt)
+	it.set_editable(_col_slot[COL_CHOP_DB], true)
+	it.set_editable(_col_slot[COL_CHOP_GAP], true)
+	it.set_editable(_col_slot[COL_CHOP_SND], true)
+	it.set_tooltip_text(_col_slot[COL_CHOP_DB],
 		"Chop silence threshold (dBFS). Blank = continuous, no chop. Double-click to edit.")
-	it.set_tooltip_text(COL_CHOP_GAP, "Chop min-gap (s). Double-click to edit.")
-	it.set_tooltip_text(COL_CHOP_SND,
+	it.set_tooltip_text(_col_slot[COL_CHOP_GAP], "Chop min-gap (s). Double-click to edit.")
+	it.set_tooltip_text(_col_slot[COL_CHOP_SND],
 		"Min sound (s): drop pieces shorter than this. 0 = keep all. Double-click to edit.")
-	it.set_tooltip_text(COL_CHOP_N, "Pieces this file chops into at its settings (run/edit to fill).")
+	it.set_tooltip_text(_col_slot[COL_CHOP_N], "Pieces this file chops into at its settings (run/edit to fill).")
 
 
 func _parse_float(txt: String, fallback: float) -> float:
@@ -4182,11 +4428,11 @@ func _on_chop_edited(rec: Variant, it: TreeItem, col: int) -> void:
 			"min_sound_s": DEF_MIN_SOUND_S}
 	c.erase("continuous")
 	if col == COL_CHOP_DB:
-		c["silence_db"] = clampf(_parse_float(it.get_text(col), c["silence_db"]), -90.0, 0.0)
+		c["silence_db"] = clampf(_parse_float(it.get_text(_col_slot[col]), c["silence_db"]), -90.0, 0.0)
 	elif col == COL_CHOP_GAP:
-		c["min_gap_s"] = clampf(_parse_float(it.get_text(col), c["min_gap_s"]), 0.0, 10.0)
+		c["min_gap_s"] = clampf(_parse_float(it.get_text(_col_slot[col]), c["min_gap_s"]), 0.0, 10.0)
 	else:  # COL_CHOP_SND
-		c["min_sound_s"] = clampf(_parse_float(it.get_text(col), c.get("min_sound_s", DEF_MIN_SOUND_S)), 0.0, 10.0)
+		c["min_sound_s"] = clampf(_parse_float(it.get_text(_col_slot[col]), c.get("min_sound_s", DEF_MIN_SOUND_S)), 0.0, 10.0)
 	_chopping[key] = c
 	# Live recount when this is the analysed file (we have its envelope cached).
 	if rec == _an_rec and not _an_levels.is_empty():
@@ -4934,7 +5180,7 @@ func _select_row_by_path(path: String) -> void:
 		var r: Variant = it.get_metadata(0)
 		if typeof(r) == TYPE_DICTIONARY and String(r.get("path", "")) == path:
 			_tree.deselect_all()
-			it.select(0)
+			it.select(_col_slot[COL_FILENAME])   # a NON-editable cell (see the ctx menu)
 			_tree.scroll_to_item(it)
 			_refresh_star_buttons(r)
 			return

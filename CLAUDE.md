@@ -185,6 +185,31 @@ for non-obvious gotchas.
   shrink with the column too (`clip_text` on Buttons, `minimum_character_width` 0
   on LineEdits — a Control's `set_size` is clamped by its minimum size). Golden
   test: `tests/test_column_widths.gd` (see LESSONS_LEARNT).
+  **Columns are also REORDERABLE — drag a header title sideways.** Tree has no
+  reorder API, so there is a LOGICAL id <-> SLOT indirection: `_col_order`
+  (slot -> logical) and `_col_slot` (logical -> slot), kept as exact mutual
+  inverses by `_set_col_order` (the ONLY writer; it de-dupes, drops out-of-range
+  ids and appends anything a stale/short saved order left out, so a bad prefs
+  file can never lose a column). **The whole app speaks LOGICAL ids** (`_sort_col`,
+  `EDITABLE_COLS`, `_colfilters`, `_last_click_col`, …); ONLY the Tree boundary
+  converts — every `TreeItem`/`Tree` call passes `_col_slot[COL_X]`, and anything
+  the Tree hands BACK (`get_column_at_position`, `get_edited_column`,
+  `column_title_clicked`) comes back through `_lcol(slot)` (which maps -1 to -1).
+  Note `_drag_base`/`_drag_base_col` deliberately hold SLOTS (snapshotted as drawn).
+  Input: a press on a title arms `_drag_hdr_col` and TAKES OVER the click
+  (`accept_event`), so the outcome never depends on when the Tree emits
+  `column_title_clicked`; moving `HDR_DRAG_START` (6) px promotes it to a move
+  (`_hdr_moving`, CURSOR_MOVE, gold insertion line + ghost label drawn by the
+  `ColDropMark` overlay at `_drop_index_x(_hdr_drop_slot)`); a release that never
+  dragged is a sort click (`_sort_by_col`). `_drop_index_at_x` returns an INSERT
+  index 0..COL_COUNT by column midpoints; `_order_after_move` (pure, tested) does
+  the lift-and-insert arithmetic (the index shifts down by one when moving right);
+  `_move_column` then re-applies widths, **re-populates the tree** (cells must be
+  rewritten into their new slots) and re-lays the filter header. `_end_hdr_drag`
+  clears the state, and `_process` calls it if the button came up outside the Tree
+  (no release event reaches us then). Persisted as `col_order` in prefs, restored
+  in `_apply_view_prefs` BEFORE `_apply_all_cols`. Golden test:
+  `tests/test_column_order.gd`.
   **Directory** column (`COL_DIRECTORY`, index 1, after Filename) = the file's full
   ABSOLUTE directory (`_directory_of` = `_abs_path` minus the filename); read-only,
   sortable, text-filterable (`STRING_FILTER_COLS`), tooltip = full path. Adding it
