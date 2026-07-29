@@ -133,7 +133,9 @@ One list of the library's keywords; the [b]Filter / Semantic / CLAP[/b] radio at
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 360, 56, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
+# Duration/Chop gap/Min snd are a touch wider than the text needs: they show
+# m:ss.mmm / 3-dp seconds (ms precision — see _fmt_time).
+const COL_DEFAULT_W := [460, 360, 56, 180, 140, 85, 92, 72, 42, 38, 78, 95, 58, 70, 78, 78, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -640,6 +642,7 @@ var _pa_paths_file: String = ""
 var _pa_pending: Array = []               # rel paths queued while a run is in flight
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
+var _minloop_edit: LineEdit             # minimum length (s) Suggest loop must reach
 var _loop_spec_path: String = ""
 var _loop_result_path: String = ""
 
@@ -887,10 +890,34 @@ func _repo_root() -> String:
 	return ProjectSettings.globalize_path("res://../").simplify_path()
 
 
-# The frozen standalone tool (bundles Python + deps), if present; else "".
+# The frozen standalone tool (bundles Python + deps), if present AND not stale; else "".
+# tool.exe is a SNAPSHOT of indexer/*.py taken at freeze time. In a dev checkout the
+# sources sit right next to it and change constantly, so blindly preferring the exe
+# runs OLD code: a newly added flag is passed to a build that never heard of it and is
+# silently ignored, and you debug a feature that never actually ran (that is exactly
+# how --min-s "failed" — see LESSONS_LEARNT). If any indexer source is newer than the
+# exe, the build is out of date: fall back to `py script.py`. A shipped standalone has
+# no indexer/ dir, so it always takes the exe.
 func _tool_exe() -> String:
 	var exe := _repo_root().path_join("tool/tool.exe")
-	return exe if FileAccess.file_exists(exe) else ""
+	if not FileAccess.file_exists(exe):
+		return ""
+	return "" if _indexer_newest_mtime() > FileAccess.get_modified_time(exe) else exe
+
+
+# Newest mtime across indexer/*.py (0 when there are no sources, i.e. a shipped build).
+# Cached — this is consulted on every job launch and the sources don't move mid-session.
+var _indexer_mtime := -1
+func _indexer_newest_mtime() -> int:
+	if _indexer_mtime >= 0:
+		return _indexer_mtime
+	_indexer_mtime = 0
+	var dir := _repo_root().path_join("indexer")
+	for f in DirAccess.get_files_at(dir):
+		if f.ends_with(".py"):
+			_indexer_mtime = maxi(_indexer_mtime,
+				FileAccess.get_modified_time(dir.path_join(f)))
+	return _indexer_mtime
 
 
 # Run an indexer command. args[0] is the .py script path used in dev (py script.py);
@@ -1584,8 +1611,8 @@ func _build_transport_row(root: VBoxContainer) -> void:
 	bar.add_child(_loop_chk)
 
 	_time_label = Label.new()
-	_time_label.custom_minimum_size = Vector2(110, 0)
-	_time_label.text = "0:00 / 0:00"
+	_time_label.custom_minimum_size = Vector2(160, 0)   # fits m:ss.mmm / m:ss.mmm
+	_time_label.text = "0:00.000 / 0:00.000"
 	bar.add_child(_time_label)
 
 	var vlab := Label.new()
@@ -1681,6 +1708,18 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "and Make loop (longer = smoother but blends more of the ends). Enter applies."
 	_xfade_edit.text_submitted.connect(func(_t): _on_xfade_changed(true))
 	loopbar.add_child(_xfade_edit)
+
+	var mlab := Label.new()
+	mlab.text = "Min loop s"
+	loopbar.add_child(mlab)
+	_minloop_edit = LineEdit.new()
+	_minloop_edit.text = "0"
+	_minloop_edit.custom_minimum_size = Vector2(48, 0)
+	_minloop_edit.tooltip_text = "Minimum length (seconds) of the loop Suggest loop " \
+		+ "picks. 0 = no minimum. Rhythmic sounds grow by WHOLE cycles (the beat stays " \
+		+ "intact across the wrap); textures widen their sustain window. A file shorter " \
+		+ "than this gives the longest loop it can."
+	loopbar.add_child(_minloop_edit)
 
 	# --- Row 3: CHOPS --------------------------------------------------
 	var chopbar := HBoxContainer.new()
@@ -2976,7 +3015,7 @@ func _on_stop_pressed() -> void:
 	_player.stop()
 	_playing_chops = false                     # stop ends the region/chops audition
 	_update_play_btn()
-	_time_label.text = "0:00 / 0:00"
+	_time_label.text = "0:00.000 / 0:00.000"
 
 
 # Left-click/drag on the visualiser scrubs the player to that fraction.
@@ -3876,8 +3915,8 @@ func _apply_chop_cells(it: TreeItem, rec: Dictionary) -> void:
 	if typeof(c) == TYPE_DICTIONARY:
 		if c.has("silence_db"):
 			db_txt = "%d" % int(round(float(c["silence_db"])))
-			gap_txt = "%.1f" % float(c.get("min_gap_s", DEF_MIN_GAP_S))
-			snd_txt = "%.2f" % float(c.get("min_sound_s", DEF_MIN_SOUND_S))
+			gap_txt = "%.3f" % float(c.get("min_gap_s", DEF_MIN_GAP_S))
+			snd_txt = "%.3f" % float(c.get("min_sound_s", DEF_MIN_SOUND_S))
 		if c.has("chops"):
 			n_txt = str(int(c["chops"]))      # continuous files report 1 piece
 	it.set_text(COL_CHOP_DB, db_txt)
@@ -4235,7 +4274,7 @@ func _on_graph_region_selected(a: float, _b: float) -> void:
 		return
 	var t0 := float(segs[0][0]) * _an_frame_s
 	var t1 := float(segs[0][1]) * _an_frame_s
-	_an_status.text = "Region %s–%s (%.2f s). Chop to files / Play chops." % [
+	_an_status.text = "Region %s–%s (%.3f s). Chop to files / Play chops." % [
 		_fmt_time(t0), _fmt_time(t1), t1 - t0]
 
 
@@ -4660,14 +4699,25 @@ func _suggest_loop() -> void:
 		"../indexer/loopfind.py").simplify_path()
 	_sl_busy = true
 	_suggest_loop_btn.disabled = true
-	_an_status.text = "Finding a good loop…"
+	var min_s := _min_loop_s()
+	_an_status.text = "Finding a good loop…" if min_s <= 0.0 \
+		else "Finding a good loop (min %.3f s)…" % min_s
 	_sl_thread = Thread.new()
-	_sl_thread.start(_sl_run.bind(script, abs, _sl_result_path))
+	_sl_thread.start(_sl_run.bind(script, abs, _sl_result_path, min_s))
 
 
-func _sl_run(script: String, audio: String, result: String) -> void:
+# The "Min loop s" field, sanitised (blank/garbage/negative -> 0 = no minimum).
+func _min_loop_s() -> float:
+	if _minloop_edit == null:
+		return 0.0
+	return maxf(0.0, _minloop_edit.text.strip_edges().to_float())
+
+
+func _sl_run(script: String, audio: String, result: String, min_s: float) -> void:
 	var output: Array = []
 	var args := [script, audio, result]
+	if min_s > 0.0:
+		args.append_array(["--min-s", "%.4f" % min_s])
 	_exec_tool(args, output)
 	call_deferred("_sl_finished")
 
@@ -4703,8 +4753,14 @@ func _sl_finished() -> void:
 			float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), kind]
 		_make_loop()
 		return
-	_an_status.text = "Suggested loop %.3f–%.3fs (%.0f ms xfade, %s) — auditioning; tweak then Make loop." % [
-		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), float(d.get("crossfade_ms", 0.0)), kind]
+	# the file itself can be too short for the requested minimum — say so, don't fail
+	var short_note := ""
+	if d.get("short", false):
+		short_note = " — file too short for a %.3f s minimum" % float(d.get("min_s", 0.0))
+	_an_status.text = "Suggested loop %.3f–%.3fs (%.3f s, %.0f ms xfade, %s)%s — auditioning; tweak then Make loop." % [
+		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)),
+		float(d.get("end_s", 0.0)) - float(d.get("start_s", 0.0)),
+		float(d.get("crossfade_ms", 0.0)), kind, short_note]
 	_play_chops("loop")                         # audition the crossfaded loop now
 
 
@@ -4780,7 +4836,7 @@ func _loop_finished() -> void:
 	_inherit_tags_to(recs, ptags)               # the loop inherits the parent's tags
 	_merge_new_records(recs)
 	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
-	_an_status.text = "Seamless loop added (%.2fs, %.0f ms xfade) — original kept.%s" % [
+	_an_status.text = "Seamless loop added (%.3f s, %.0f ms xfade) — original kept.%s" % [
 		float(d.get("out_duration", 0.0)), float(d.get("xfade_ms", 0.0)), tag_note]
 	_analyse_paths(_paths_of(recs))             # auto-fill dB + chop columns for the loop
 
@@ -4821,8 +4877,8 @@ func _merge_new_records(recs: Array) -> void:
 
 func _update_param_labels() -> void:
 	if _sil_lbl: _sil_lbl.text = "%d dB" % int(_sil_slider.value)
-	if _gap_lbl: _gap_lbl.text = "%.1f s" % _gap_slider.value
-	if _snd_lbl: _snd_lbl.text = "%.2f s" % _snd_slider.value
+	if _gap_lbl: _gap_lbl.text = "%.3f s" % _gap_slider.value
+	if _snd_lbl: _snd_lbl.text = "%.3f s" % _snd_slider.value
 
 
 # --- run the Python envelope extractor for the selected file (off-thread) ---
@@ -4961,7 +5017,7 @@ func _on_param_changed() -> void:
 		var raw := _gd_find_segments(_an_levels, _sil_slider.value,
 			_gap_slider.value, 0.0, _an_frame_s)
 		if raw.size() > 0:
-			_an_status.text = "%s  →  0 pieces  (%d below Min sound %.2fs — lower Min sound)" % [
+			_an_status.text = "%s  →  0 pieces  (%d below Min sound %.3f s — lower Min sound)" % [
 				name, raw.size(), _snd_slider.value]
 			return
 	_an_status.text = "%s  →  %d piece%s  (%d gaps)" % [
@@ -5054,9 +5110,17 @@ func _fmt_dur(d: Variant) -> String:
 	return _fmt_time(float(d))
 
 
-func _fmt_time(secs: float) -> String:
-	var s := int(round(secs))
-	return "%d:%02d" % [s / 60, s % 60]
+# m:ss.mmm — audio work is edited in MILLISECONDS (loop points, chop boundaries,
+# crossfades), so every time readout carries them. `ms=false` gives the compact
+# m:ss for cramped controls (the filter slider's ticks/knobs).
+func _fmt_time(secs: float, ms: bool = true) -> String:
+	var neg := secs < 0.0
+	var total_ms := int(round(absf(secs) * 1000.0))
+	if not ms:
+		var s := int(round(absf(secs)))
+		return "%s%d:%02d" % ["-" if neg else "", s / 60, s % 60]
+	return "%s%d:%02d.%03d" % ["-" if neg else "",
+		total_ms / 60000, (total_ms / 1000) % 60, total_ms % 1000]
 
 
 func _fmt_rate(r: Variant) -> String:
@@ -5078,10 +5142,10 @@ func _fmt_size(b: Variant) -> String:
 # Format a numeric value in a column's own units (for the range slider + button).
 func _fmt_col_value(v: float, col: int) -> String:
 	match col:
-		COL_DURATION: return _fmt_time(v)                 # mm:ss
-		COL_SIZE: return _fmt_size(v)                     # bytes -> MB/KB
+		COL_DURATION: return _fmt_time(v, false)          # m:ss — the slider ticks are
+		COL_SIZE: return _fmt_size(v)                     # too cramped for ms
 		COL_RATE: return _fmt_rate(v)                     # Hz -> kHz
-		COL_CHOP_GAP, COL_CHOP_SND: return "%.2fs" % v
+		COL_CHOP_GAP, COL_CHOP_SND: return "%.3fs" % v
 		COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB, COL_CHOP_DB: return "%.1f dB" % v
 		COL_SCORE: return "%.2f" % v
 		COL_LEVEL: return "%.1f" % v

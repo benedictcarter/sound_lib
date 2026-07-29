@@ -15,7 +15,11 @@ how periodic the file is:
 Both ends are snapped to a rising zero crossing. Returns start_s / end_s /
 crossfade_ms so the app can set the green region + Xfade and the user previews it.
 
-    py indexer/loopfind.py <audio> [out.json]
+`--min-s N` sets a MINIMUM loop length: rhythmic loops grow by WHOLE cycles (a
+part-cycle would break the rhythm across the wrap), textures widen their sustain
+window. Capped by the file itself — a 2 s file can't yield a 5 s loop.
+
+    py indexer/loopfind.py <audio> [out.json] [--min-s N]
 
 Pure analysis — writes nothing to the audio; loopify.py does the baking.
 """
@@ -94,7 +98,26 @@ def _refine_length(x: np.ndarray, start: int, approx_len: int, sr: int,
     return best_e
 
 
-def suggest_loop(path: str) -> dict:
+def _enforce_min(x: np.ndarray, start: int, end: int, sr: int, min_s: float) -> tuple[int, int]:
+    """Grow [start, end) to at least `min_s` seconds by extending the END, pulling
+    the START back only when the file runs out. Capped at the file length, so an
+    impossible minimum degrades to "as long as this file allows" rather than
+    failing. The extended end is re-snapped to a rising zero crossing only when
+    that still satisfies the minimum."""
+    n = len(x)
+    need = min(int(round(min_s * sr)), n - 1)
+    if need <= 0 or end - start >= need:
+        return start, end
+    end = start + need
+    if end > n - 1:                       # ran off the end: slide the window back
+        end = n - 1
+        start = max(0, end - need)        # left unsnapped; the crossfade hides it
+        return start, end
+    e2 = _zero_snap(x, end, sr)
+    return start, (e2 if e2 - start >= need else end)
+
+
+def suggest_loop(path: str, min_s: float = 0.0) -> dict:
     x, sr = load_mono(path)
     n = len(x)
     dur = n / sr
@@ -128,6 +151,12 @@ def suggest_loop(path: str) -> dict:
                 return (a + int(np.argmin(env[a:b]))) * hop
             start = dip_before(int(onsets[run[1]]))         # 2nd onset = steady state
             approx = dip_before(int(onsets[run[-1]])) - start
+            # A requested minimum grows the loop in WHOLE cycles — a part-cycle
+            # would land the wrap off-beat and break the rhythm.
+            need = int(round(min_s * sr))
+            if approx < need and period:
+                approx = int(np.ceil(need / period)) * int(period)
+                approx = min(approx, n - 1 - start)         # never past the file
             end = _refine_length(x, start, approx, sr, search_ms=period / sr * 1000.0 * 0.35)
             xfade_ms = min(period / sr * 1000.0 * 0.35, 30.0)
         else:
@@ -147,8 +176,8 @@ def suggest_loop(path: str) -> dict:
         margin = int(0.08 * sr / hop)
         start = max(0, s_f + margin) * hop                 # frames -> samples
         end = max(start + hop, (e_f - margin) * hop)       # (both already in samples)
-        max_len = int(2.5 * sr)
-        if end - start > max_len:
+        max_len = int(max(2.5, min_s) * sr)                # a min longer than the
+        if end - start > max_len:                          # default cap wins
             mid = (start + end) // 2
             start, end = mid - max_len // 2, mid + max_len // 2
         end = _refine_length(x, start, end - start, sr, search_ms=120.0)
@@ -158,6 +187,7 @@ def suggest_loop(path: str) -> dict:
     end = _zero_snap(x, min(n - 1, end), sr)
     if end <= start:
         start, end = 0, n - 1
+    start, end = _enforce_min(x, start, end, sr, min_s)     # last word on length
     # crossfade can't exceed half the region
     xfade_ms = min(xfade_ms, (end - start) / sr * 1000.0 * 0.5)
 
@@ -165,6 +195,8 @@ def suggest_loop(path: str) -> dict:
         "ok": True,
         "start_s": start / sr,
         "end_s": end / sr,
+        "min_s": float(min_s),
+        "short": bool(min_s > 0.0 and (end - start) / sr < min_s - 1e-3),
         "crossfade_ms": round(xfade_ms, 1),
         "periodic": bool(periodic),
         "period_ms": round(period / sr * 1000.0, 1) if period else 0.0,
@@ -173,23 +205,52 @@ def suggest_loop(path: str) -> dict:
     }
 
 
+def parse_args(argv: list[str]) -> tuple[list[str], float]:
+    """Split positional args from `--min-s N` / `--min-s=N` (kept hand-rolled so
+    the error path below can still find the out.json positionally)."""
+    pos: list[str] = []
+    min_s = 0.0
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--min-s" and i + 1 < len(argv):
+            i += 1
+            min_s = float(argv[i])
+        elif a.startswith("--min-s="):
+            min_s = float(a.split("=", 1)[1])
+        elif a.startswith("-"):
+            # loudly, rather than silently treating it as the out path: an ignored
+            # flag reads as "the feature doesn't work" from the GUI.
+            raise SystemExit(f"loopfind.py: unknown option {a!r}")
+        else:
+            pos.append(a)
+        i += 1
+    return pos, max(0.0, min_s)
+
+
 def main() -> None:
-    if len(sys.argv) < 2:
-        sys.exit("usage: loopfind.py <audio> [out.json]")
-    res = suggest_loop(sys.argv[1])
-    out = sys.argv[2] if len(sys.argv) > 2 else ""
+    pos, min_s = parse_args(sys.argv[1:])
+    if not pos:
+        sys.exit("usage: loopfind.py <audio> [out.json] [--min-s N]")
+    res = suggest_loop(pos[0], min_s)
+    out = pos[1] if len(pos) > 1 else ""
     if out:
         Path(out).write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
     kind = ("periodic %.0f ms (str %.2f)" % (res["period_ms"], res["strength"])) if res["periodic"] else "texture"
+    short = "  (SHORT: file allows no more)" if res["short"] else ""
     print(f"loop: {res['start_s']:.3f}–{res['end_s']:.3f}s  "
-          f"({res['end_s'] - res['start_s']:.3f}s)  xfade {res['crossfade_ms']:.0f}ms  [{kind}]")
+          f"({res['end_s'] - res['start_s']:.3f}s)  xfade {res['crossfade_ms']:.0f}ms  [{kind}]{short}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:  # noqa: BLE001
-        if len(sys.argv) > 2:
-            Path(sys.argv[2]).write_text(json.dumps({"ok": False, "error": str(e)}), encoding="utf-8")
+        try:
+            _pos = parse_args(sys.argv[1:])[0]
+            if len(_pos) > 1:
+                Path(_pos[1]).write_text(json.dumps({"ok": False, "error": str(e)}), encoding="utf-8")
+        except Exception:
+            pass
         print("ERROR:", e, file=sys.stderr)
         sys.exit(1)
