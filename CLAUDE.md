@@ -345,6 +345,14 @@ for non-obvious gotchas.
   chops. Threaded `py loopify.py <audio> <spec.json> <result.json>` (spec:
   start_s/end_s/crossfade_ms/curve/parent). Industry-standard primitive; an
   autocorrelation/zero-cross "Suggest loop" analyser is the planned next layer.
+  **The crossfaded ends are SHADED violet** on the graph whenever Crossfade is on
+  and one region is selected: `_update_xfade_overlay` pushes `xfade_frac` (crossfade
+  as a fraction of the whole file, clamped to half the region exactly as the bakers
+  do) + `xfade_label` into the WaveGraph, which tints BOTH ends — the head that
+  fades in and the tail that is folded back over it — so you can see how much of the
+  region is blended rather than heard in place. Called from `_on_xfade_changed`, the
+  live region drag, `_sl_finished`, and every place the selection is cleared
+  (`_an_finished`, `_apply_suggested`, ctx "suggest_chops").
   **Crossfade preview** (`_xfade_chk` + `_xfade_edit`): with it on, Play chops on a
   SINGLE region builds the crossfaded loop IN MEMORY (`_build_xfade_loop_stream`,
   the same equal-power overlap-add as loopify, per-sample over the L overlap via

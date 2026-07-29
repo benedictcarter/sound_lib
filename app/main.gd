@@ -163,6 +163,12 @@ class WaveGraph extends Control:
 	# a plain left-click clears it (back to the detector). Right-drag sets height.
 	var sel_a: float = -1.0
 	var sel_b: float = -1.0
+	# The crossfade the loop preview / Make loop will apply, as a fraction of the
+	# WHOLE file (0 = none, or Crossfade is off). Both ends of the region are
+	# shaded: the equal-power overlap-add folds the TAIL back over the HEAD, so
+	# those two spans are the audio that gets blended rather than played as-is.
+	var xfade_frac: float = 0.0
+	var xfade_label: String = ""
 
 	func has_manual_sel() -> bool:
 		return sel_a >= 0.0 and sel_b >= 0.0 and absf(sel_b - sel_a) > 0.0005
@@ -401,6 +407,22 @@ class WaveGraph extends Control:
 			draw_line(Vector2(x, h), Vector2(x, _yfor(levels[fi])), green if kept else grey, 1.0)
 		var font := get_theme_default_font()
 		if sel:
+			# The CROSSFADED ends, tinted violet over the green: the head fades in,
+			# the tail (folded back over it by the equal-power overlap-add) fades
+			# out, so those spans are blended together rather than heard in place.
+			# Never wider than half the region each — the same clamp loopify uses —
+			# so the two bands meet but never overlap.
+			if xfade_frac > 0.0:
+				var xw := minf(xfade_frac, (m_hi - m_lo) * 0.5) * w
+				var xcol := Color(0.62, 0.45, 1.0, 0.40)
+				draw_rect(Rect2(m_lo * w, 0, xw, h), xcol)
+				draw_rect(Rect2(m_hi * w - xw, 0, xw, h), xcol)
+				var xline := Color(0.72, 0.58, 1.0, 0.95)
+				draw_line(Vector2(m_lo * w + xw, 0), Vector2(m_lo * w + xw, h), xline, 1.0)
+				draw_line(Vector2(m_hi * w - xw, 0), Vector2(m_hi * w - xw, h), xline, 1.0)
+				if xfade_label != "" and xw > 44.0:
+					draw_string(get_theme_default_font(), Vector2(m_lo * w + 4.0, 14.0),
+						xfade_label, HORIZONTAL_ALIGNMENT_LEFT, xw - 6.0, 12, xline)
 			# bright yellow edges of the selected region, each with a drag handle
 			var scol := Color(1.0, 0.85, 0.2)
 			draw_line(Vector2(m_lo * w, 0), Vector2(m_lo * w, h), scol, 1.5)
@@ -1780,7 +1802,8 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_xfade_chk.text = "Crossfade"
 	_xfade_chk.tooltip_text = "Preview the selected region as a SEAMLESS crossfaded " \
 		+ "loop (in memory — nothing written). Turn Loop on and press Play chops to " \
-		+ "audition; tweak Xfade ms (Enter) and re-drag the region to experiment."
+		+ "audition; tweak Xfade ms (Enter) and re-drag the region to experiment. " \
+		+ "Both blended ends are shaded violet on the waveform."
 	_xfade_chk.toggled.connect(_on_xfade_changed)
 	loopbar.add_child(_xfade_chk)
 
@@ -4346,15 +4369,40 @@ func _build_xfade_loop_stream(stream: AudioStreamWAV, seg: Array, bps: int, ch: 
 	return sw
 
 
-# Crossfade option / Xfade ms changed — rebuild the live preview if one is playing.
+# Crossfade option / Xfade ms changed — repaint the shaded ends and rebuild the
+# live preview if one is playing.
 func _on_xfade_changed(_v: Variant = null) -> void:
+	_update_xfade_overlay()
 	if _playing_chops and not _effective_segments().is_empty():
 		_play_chops()
+
+
+# Tell the graph how much of each end the crossfade blends, so it can shade those
+# spans. 0 = nothing to show (Crossfade off, no single region, or no file loaded).
+# Mirrors the clamps the bakers apply: never more than half the region.
+func _update_xfade_overlay() -> void:
+	if _graph == null:
+		return
+	var frac := 0.0
+	var lbl := ""
+	if _xfade_chk != null and _xfade_chk.button_pressed and _graph.has_manual_sel() \
+			and _an_duration > 0.0:
+		var region_s := absf(_graph.sel_b - _graph.sel_a) * _an_duration
+		var xfade_s := minf(maxf(0.0, _xfade_edit.text.strip_edges().to_float()) / 1000.0,
+			region_s * 0.5)
+		frac = xfade_s / _an_duration
+		lbl = "xfade %.0f ms" % (xfade_s * 1000.0)
+	if is_equal_approx(frac, _graph.xfade_frac) and lbl == _graph.xfade_label:
+		return
+	_graph.xfade_frac = frac
+	_graph.xfade_label = lbl
+	_graph.queue_redraw()
 
 
 # Live feedback as the region is dragged (status text + green repaint happens in
 # the graph). No audio rebuild here — that waits for region_committed (release).
 func _on_graph_region_selected(a: float, _b: float) -> void:
+	_update_xfade_overlay()             # the shaded ends follow the drag live
 	if a < 0.0:
 		_an_status.text = "Selection cleared — back to the detector."
 		return
@@ -4785,6 +4833,7 @@ func _dispatch_ctx(action: String) -> void:
 			_graph.sel_b = -1.0
 			_graph.queue_redraw()
 			if _xfade_chk: _xfade_chk.button_pressed = false
+			_update_xfade_overlay()
 			if _loop_chk: _loop_chk.button_pressed = true
 			_play_chops("chops")                    # audition the chops, looping
 		"make_loop":
@@ -4856,6 +4905,7 @@ func _sl_finished() -> void:
 	_graph.queue_redraw()
 	_xfade_edit.text = "%.0f" % float(d.get("crossfade_ms", 100.0))
 	_xfade_chk.button_pressed = true            # preview as a crossfaded loop
+	_update_xfade_overlay()                     # shade the ends it will blend
 	if _loop_chk:
 		_loop_chk.button_pressed = true         # loop it so the seam is audible
 	var kind := ("rhythmic %.0f ms" % float(d.get("period_ms", 0.0))) if d.get("periodic", false) else "texture"
@@ -5077,6 +5127,7 @@ func _an_finished() -> void:
 	_graph.levels = _an_levels
 	_graph.sel_a = -1.0                 # drop any stale manual selection from the prior file
 	_graph.sel_b = -1.0
+	_update_xfade_overlay()            # ...and the crossfade shading that went with it
 	_apply_saved_or_suggested()        # also recomputes + redraws
 	if pend != "":
 		_dispatch_ctx(pend)
@@ -5107,6 +5158,7 @@ func _apply_suggested() -> void:
 	if _graph != null and _graph.has_manual_sel():
 		_graph.sel_a = -1.0
 		_graph.sel_b = -1.0
+		_update_xfade_overlay()
 	_sil_slider.set_value_no_signal(_an_suggested)
 	_update_param_labels()
 	_on_param_changed()
