@@ -299,6 +299,14 @@ for non-obvious gotchas.
   **Manual region** is always-on (no toggle): **left-click-drag** on the graph
   selects ONE region (`sel_a`/`sel_b` fractions; `region_selected` live,
   `region_committed` on release; a plain left-click clears back to the detector).
+  Each yellow edge has a **drag HANDLE** — an arrow tab drawn inside the region
+  (`_draw_handle`), grabbed by pressing within `HANDLE_GRAB` (8) px of the edge
+  (`_edge_at`, nearest edge wins). `_edge_drag` (0/1/2) makes the press move THAT
+  end only instead of starting a new selection, clamped so it can't cross the other
+  end (`MIN_SEL`); hovering one sets the HSIZE cursor (`_set_edge_hover`) and
+  brightens the tab. Release commits like any region drag, so a playing preview
+  follows. Golden-tested headlessly:
+  `Godot..._console.exe --headless --path app --script tests/test_wavegraph_handles.gd`.
   **Right-click-drag** sets the height (silence threshold). Seek is on the strip
   below (the graph no longer seeks). `_graph.has_manual_sel()` gates everything:
   `_effective_segments()` returns the region (one frame pair) when a selection is
