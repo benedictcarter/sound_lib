@@ -338,6 +338,14 @@ for non-obvious gotchas.
   ends to a rising zero crossing and refine the length by window SSD. `_sl_finished`
   sets the green region + Xfade, ticks Crossfade + Loop, and auto-previews. Golden-
   tested (find_period periodic vs texture, suggest_loop region validity).
+  **Min loop s** (`_minloop_edit`, next to Xfade ms; 0 = off) sets a MINIMUM length
+  for the suggestion: `_suggest_loop` passes `--min-s N` to loopfind, where PERIODIC
+  content grows by WHOLE cycles (`ceil(need/period)` — a part-cycle would land the
+  wrap off-beat) and TEXTURE widens its plateau cap (`max(2.5, min_s)`), then
+  `_enforce_min` extends the end (pulling the start back only if the file runs out)
+  and re-snaps the end to a zero crossing only when that still meets the minimum.
+  A file shorter than the minimum returns the longest loop it can with `short: true`
+  — reported in the status line, never an error.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
@@ -377,7 +385,12 @@ for non-obvious gotchas.
   script (via `runpy`, exact CLI preserved). **PyInstaller** freezes it into one
   `tool/tool.exe` (onedir) bundling Python + deps. The app's `_exec_tool` runs
   `tool/tool.exe <cmd> <args>` when that exe exists (checked at `res://../tool/`),
-  else falls back to `py <script>.py` (dev). The app sets `SOUNDLIB_REPO` (=
+  else falls back to `py <script>.py` (dev). **STALENESS GUARD**: tool.exe is a
+  frozen SNAPSHOT of `indexer/*.py`, so `_tool_exe()` returns "" (-> `py`) when any
+  `indexer/*.py` is NEWER than the exe (`_indexer_newest_mtime`, cached) — otherwise
+  a dev edit is silently shadowed by the old build and the feature "doesn't work"
+  in the app while working from the CLI (see LESSONS_LEARNT). A shipped standalone
+  has no `indexer/` dir, so it always uses the exe. The app sets `SOUNDLIB_REPO` (=
   `res://..`) so the (relocated/frozen) scripts resolve `app/index.json` +
   `library.cfg` — every script's `REPO`/`INDEX` honours that env var.
 - `_load_index` reads `index.json` from the globalized DISK path (not `res://`,
@@ -404,7 +417,7 @@ for non-obvious gotchas.
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
 - Decode a non-WAV (mp3/…) to a sibling WAV: `py indexer/to_wav.py <src> <result.json>`
-- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json]`
+- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json] [--min-s N]`
 - Bake a seamless loop: `py indexer/loopify.py <audio> <spec.json> <result.json>`
 - Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)
 - Build/update audio fingerprints: `py indexer/fingerprint.py [--only-missing]`  (-> library_root/fingerprints.npz)
