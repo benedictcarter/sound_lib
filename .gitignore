@@ -9,7 +9,11 @@
 # --- PyInstaller standalone build (frozen tool.exe + build cruft) ---
 /tool/
 /_pybuild/
+/build/
 *.spec
+
+# Generated for other coding agents from CLAUDE.md — not a source doc.
+/AGENTS.md
 
 # --- Downloaded ML models (e.g. the ~1 GB CLAP model) — NEVER commit these ---
 /models/
