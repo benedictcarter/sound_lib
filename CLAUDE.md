@@ -121,6 +121,11 @@ for non-obvious gotchas.
   "Analyse audio (chops + loudness)" button (`indexer/analyse_audio.py`, one read
   per file does chops + loudness; `_sg_*` job reloads both, polled progress).
   Column order: Tags | tgt vol/Level | orig dB | Gain dB | final dB.
+  **Times are shown to the MILLISECOND** — `_fmt_time` renders `m:ss.mmm` (Duration
+  column, the transport position/length, the region status line); `_fmt_time(v, false)`
+  is the compact `m:ss` kept for the Duration filter slider's cramped ticks/knobs.
+  Chop gap / Min snd (cells + slider labels + filter) are 3-dp seconds. Audio is
+  edited in ms (loop points, chop boundaries, crossfades) so a rounded second lies.
   **Level** column (`COL_LEVEL`, userdata `level`, editable) = a 0-10 PERCEPTUAL
   loudness dial: 10 = `LEVEL_TOP_DBFS` (-10 dBFS), 0 = silence, halving the number
   = half perceived loudness = -10 dB (`_level_to_dbfs` = top + 10·log2(level/10),
