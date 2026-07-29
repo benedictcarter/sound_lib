@@ -133,7 +133,9 @@ One list of the library's keywords; the [b]Filter / Semantic / CLAP[/b] radio at
 const KW_MIN_LEN := 2       # ignore 1-char tokens
 
 # Default column widths (indices match COL_*). Columns are resizable at runtime.
-const COL_DEFAULT_W := [460, 360, 56, 180, 140, 85, 65, 72, 42, 38, 78, 95, 58, 70, 72, 70, 80, 200, 96, 72, 64, 72]
+# Duration/Chop gap/Min snd are a touch wider than the text needs: they show
+# m:ss.mmm / 3-dp seconds (ms precision — see _fmt_time).
+const COL_DEFAULT_W := [460, 360, 56, 180, 140, 85, 92, 72, 42, 38, 78, 95, 58, 70, 78, 78, 80, 200, 96, 72, 64, 72]
 const COL_MIN_W := 28       # smallest a column can be dragged to
 const RESIZE_GRAB := 6      # px tolerance around a divider to start a resize
 
@@ -1531,8 +1533,8 @@ func _build_transport_row(root: VBoxContainer) -> void:
 	bar.add_child(_loop_chk)
 
 	_time_label = Label.new()
-	_time_label.custom_minimum_size = Vector2(110, 0)
-	_time_label.text = "0:00 / 0:00"
+	_time_label.custom_minimum_size = Vector2(160, 0)   # fits m:ss.mmm / m:ss.mmm
+	_time_label.text = "0:00.000 / 0:00.000"
 	bar.add_child(_time_label)
 
 	var vlab := Label.new()
@@ -2935,7 +2937,7 @@ func _on_stop_pressed() -> void:
 	_player.stop()
 	_playing_chops = false                     # stop ends the region/chops audition
 	_update_play_btn()
-	_time_label.text = "0:00 / 0:00"
+	_time_label.text = "0:00.000 / 0:00.000"
 
 
 # Left-click/drag on the visualiser scrubs the player to that fraction.
@@ -3835,8 +3837,8 @@ func _apply_chop_cells(it: TreeItem, rec: Dictionary) -> void:
 	if typeof(c) == TYPE_DICTIONARY:
 		if c.has("silence_db"):
 			db_txt = "%d" % int(round(float(c["silence_db"])))
-			gap_txt = "%.1f" % float(c.get("min_gap_s", DEF_MIN_GAP_S))
-			snd_txt = "%.2f" % float(c.get("min_sound_s", DEF_MIN_SOUND_S))
+			gap_txt = "%.3f" % float(c.get("min_gap_s", DEF_MIN_GAP_S))
+			snd_txt = "%.3f" % float(c.get("min_sound_s", DEF_MIN_SOUND_S))
 		if c.has("chops"):
 			n_txt = str(int(c["chops"]))      # continuous files report 1 piece
 	it.set_text(COL_CHOP_DB, db_txt)
@@ -4194,7 +4196,7 @@ func _on_graph_region_selected(a: float, _b: float) -> void:
 		return
 	var t0 := float(segs[0][0]) * _an_frame_s
 	var t1 := float(segs[0][1]) * _an_frame_s
-	_an_status.text = "Region %s–%s (%.2f s). Chop to files / Play chops." % [
+	_an_status.text = "Region %s–%s (%.3f s). Chop to files / Play chops." % [
 		_fmt_time(t0), _fmt_time(t1), t1 - t0]
 
 
@@ -4756,7 +4758,7 @@ func _loop_finished() -> void:
 	_inherit_tags_to(recs, ptags)               # the loop inherits the parent's tags
 	_merge_new_records(recs)
 	var tag_note := "  (tags inherited)" if ptags.strip_edges() != "" else ""
-	_an_status.text = "Seamless loop added (%.2fs, %.0f ms xfade) — original kept.%s" % [
+	_an_status.text = "Seamless loop added (%.3f s, %.0f ms xfade) — original kept.%s" % [
 		float(d.get("out_duration", 0.0)), float(d.get("xfade_ms", 0.0)), tag_note]
 	_analyse_paths(_paths_of(recs))             # auto-fill dB + chop columns for the loop
 
@@ -4797,8 +4799,8 @@ func _merge_new_records(recs: Array) -> void:
 
 func _update_param_labels() -> void:
 	if _sil_lbl: _sil_lbl.text = "%d dB" % int(_sil_slider.value)
-	if _gap_lbl: _gap_lbl.text = "%.1f s" % _gap_slider.value
-	if _snd_lbl: _snd_lbl.text = "%.2f s" % _snd_slider.value
+	if _gap_lbl: _gap_lbl.text = "%.3f s" % _gap_slider.value
+	if _snd_lbl: _snd_lbl.text = "%.3f s" % _snd_slider.value
 
 
 # --- run the Python envelope extractor for the selected file (off-thread) ---
@@ -4937,7 +4939,7 @@ func _on_param_changed() -> void:
 		var raw := _gd_find_segments(_an_levels, _sil_slider.value,
 			_gap_slider.value, 0.0, _an_frame_s)
 		if raw.size() > 0:
-			_an_status.text = "%s  →  0 pieces  (%d below Min sound %.2fs — lower Min sound)" % [
+			_an_status.text = "%s  →  0 pieces  (%d below Min sound %.3f s — lower Min sound)" % [
 				name, raw.size(), _snd_slider.value]
 			return
 	_an_status.text = "%s  →  %d piece%s  (%d gaps)" % [
@@ -5030,9 +5032,17 @@ func _fmt_dur(d: Variant) -> String:
 	return _fmt_time(float(d))
 
 
-func _fmt_time(secs: float) -> String:
-	var s := int(round(secs))
-	return "%d:%02d" % [s / 60, s % 60]
+# m:ss.mmm — audio work is edited in MILLISECONDS (loop points, chop boundaries,
+# crossfades), so every time readout carries them. `ms=false` gives the compact
+# m:ss for cramped controls (the filter slider's ticks/knobs).
+func _fmt_time(secs: float, ms: bool = true) -> String:
+	var neg := secs < 0.0
+	var total_ms := int(round(absf(secs) * 1000.0))
+	if not ms:
+		var s := int(round(absf(secs)))
+		return "%s%d:%02d" % ["-" if neg else "", s / 60, s % 60]
+	return "%s%d:%02d.%03d" % ["-" if neg else "",
+		total_ms / 60000, (total_ms / 1000) % 60, total_ms % 1000]
 
 
 func _fmt_rate(r: Variant) -> String:
@@ -5054,10 +5064,10 @@ func _fmt_size(b: Variant) -> String:
 # Format a numeric value in a column's own units (for the range slider + button).
 func _fmt_col_value(v: float, col: int) -> String:
 	match col:
-		COL_DURATION: return _fmt_time(v)                 # mm:ss
-		COL_SIZE: return _fmt_size(v)                     # bytes -> MB/KB
+		COL_DURATION: return _fmt_time(v, false)          # m:ss — the slider ticks are
+		COL_SIZE: return _fmt_size(v)                     # too cramped for ms
 		COL_RATE: return _fmt_rate(v)                     # Hz -> kHz
-		COL_CHOP_GAP, COL_CHOP_SND: return "%.2fs" % v
+		COL_CHOP_GAP, COL_CHOP_SND: return "%.3fs" % v
 		COL_LOUDNESS, COL_GAIN_DB, COL_FINAL_DB, COL_CHOP_DB: return "%.1f dB" % v
 		COL_SCORE: return "%.2f" % v
 		COL_LEVEL: return "%.1f" % v
