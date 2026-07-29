@@ -191,3 +191,23 @@ instead, on the ACTUAL `load_from_file` == null, decode that one file to a 16-bi
 sibling (`<stem>_16bit.wav`, via soundfile which reads EXTENSIBLE) and play that;
 reuse the sibling next time. Same on-demand pattern as the non-WAV mp3/ogg decode.
 Cost: chased "24-bit unsupported" before testing that plain 24-bit actually loads.
+
+## The frozen tool.exe silently shadows every Python edit you make
+Ben set "Min loop s" to 10, hit Suggest loop, and got a 2 s region. The GDScript
+was right, the flag was right, `py indexer/loopfind.py … --min-s 10` returned
+exactly 10.000 s — and the feature still didn't work. Cause: `_exec_tool` prefers
+`tool/tool.exe` whenever it exists, and tool.exe is a PyInstaller SNAPSHOT of
+`indexer/*.py` frozen weeks earlier. The app was running a build of loopfind that
+had never heard of `--min-s`. Two things conspired to make it silent: the exe is
+gitignored, so it survives every branch switch and never shows up in `git status`
+as something that could be stale; and the old hand-rolled arg parser dropped
+unrecognised tokens into the positional list instead of erroring, so an unknown
+flag looked exactly like no flag. **Fix, both halves:** `_tool_exe()` now returns
+"" when any `indexer/*.py` is newer than the exe (mtime compare, cached) so a dev
+checkout falls back to `py script.py` the moment you touch a source; and the arg
+parsers reject unknown `-…` options loudly. A shipped standalone has no `indexer/`
+directory, so it still takes the exe unconditionally. Rule of thumb: after ANY
+indexer change, either rebuild tool.exe or confirm the fallback kicked in — a
+green pytest run proves the SCRIPT works, never that the APP ran that script.
+Cost: a failed UAT and a full round-trip to reproduce something that worked
+perfectly from the command line.

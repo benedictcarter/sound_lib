@@ -218,6 +218,10 @@ def parse_args(argv: list[str]) -> tuple[list[str], float]:
             min_s = float(argv[i])
         elif a.startswith("--min-s="):
             min_s = float(a.split("=", 1)[1])
+        elif a.startswith("-"):
+            # loudly, rather than silently treating it as the out path: an ignored
+            # flag reads as "the feature doesn't work" from the GUI.
+            raise SystemExit(f"loopfind.py: unknown option {a!r}")
         else:
             pos.append(a)
         i += 1

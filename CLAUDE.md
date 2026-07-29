@@ -380,7 +380,12 @@ for non-obvious gotchas.
   script (via `runpy`, exact CLI preserved). **PyInstaller** freezes it into one
   `tool/tool.exe` (onedir) bundling Python + deps. The app's `_exec_tool` runs
   `tool/tool.exe <cmd> <args>` when that exe exists (checked at `res://../tool/`),
-  else falls back to `py <script>.py` (dev). The app sets `SOUNDLIB_REPO` (=
+  else falls back to `py <script>.py` (dev). **STALENESS GUARD**: tool.exe is a
+  frozen SNAPSHOT of `indexer/*.py`, so `_tool_exe()` returns "" (-> `py`) when any
+  `indexer/*.py` is NEWER than the exe (`_indexer_newest_mtime`, cached) — otherwise
+  a dev edit is silently shadowed by the old build and the feature "doesn't work"
+  in the app while working from the CLI (see LESSONS_LEARNT). A shipped standalone
+  has no `indexer/` dir, so it always uses the exe. The app sets `SOUNDLIB_REPO` (=
   `res://..`) so the (relocated/frozen) scripts resolve `app/index.json` +
   `library.cfg` — every script's `REPO`/`INDEX` honours that env var.
 - `_load_index` reads `index.json` from the globalized DISK path (not `res://`,

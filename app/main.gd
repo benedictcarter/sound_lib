@@ -810,10 +810,34 @@ func _repo_root() -> String:
 	return ProjectSettings.globalize_path("res://../").simplify_path()
 
 
-# The frozen standalone tool (bundles Python + deps), if present; else "".
+# The frozen standalone tool (bundles Python + deps), if present AND not stale; else "".
+# tool.exe is a SNAPSHOT of indexer/*.py taken at freeze time. In a dev checkout the
+# sources sit right next to it and change constantly, so blindly preferring the exe
+# runs OLD code: a newly added flag is passed to a build that never heard of it and is
+# silently ignored, and you debug a feature that never actually ran (that is exactly
+# how --min-s "failed" — see LESSONS_LEARNT). If any indexer source is newer than the
+# exe, the build is out of date: fall back to `py script.py`. A shipped standalone has
+# no indexer/ dir, so it always takes the exe.
 func _tool_exe() -> String:
 	var exe := _repo_root().path_join("tool/tool.exe")
-	return exe if FileAccess.file_exists(exe) else ""
+	if not FileAccess.file_exists(exe):
+		return ""
+	return "" if _indexer_newest_mtime() > FileAccess.get_modified_time(exe) else exe
+
+
+# Newest mtime across indexer/*.py (0 when there are no sources, i.e. a shipped build).
+# Cached — this is consulted on every job launch and the sources don't move mid-session.
+var _indexer_mtime := -1
+func _indexer_newest_mtime() -> int:
+	if _indexer_mtime >= 0:
+		return _indexer_mtime
+	_indexer_mtime = 0
+	var dir := _repo_root().path_join("indexer")
+	for f in DirAccess.get_files_at(dir):
+		if f.ends_with(".py"):
+			_indexer_mtime = maxi(_indexer_mtime,
+				FileAccess.get_modified_time(dir.path_join(f)))
+	return _indexer_mtime
 
 
 # Run an indexer command. args[0] is the .py script path used in dev (py script.py);
