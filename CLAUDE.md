@@ -121,6 +121,11 @@ for non-obvious gotchas.
   "Analyse audio (chops + loudness)" button (`indexer/analyse_audio.py`, one read
   per file does chops + loudness; `_sg_*` job reloads both, polled progress).
   Column order: Tags | tgt vol/Level | orig dB | Gain dB | final dB.
+  **Times are shown to the MILLISECOND** — `_fmt_time` renders `m:ss.mmm` (Duration
+  column, the transport position/length, the region status line); `_fmt_time(v, false)`
+  is the compact `m:ss` kept for the Duration filter slider's cramped ticks/knobs.
+  Chop gap / Min snd (cells + slider labels + filter) are 3-dp seconds. Audio is
+  edited in ms (loop points, chop boundaries, crossfades) so a rounded second lies.
   **Level** column (`COL_LEVEL`, userdata `level`, editable) = a 0-10 PERCEPTUAL
   loudness dial: 10 = `LEVEL_TOP_DBFS` (-10 dBFS), 0 = silence, halving the number
   = half perceived loudness = -10 dB (`_level_to_dbfs` = top + 10·log2(level/10),
@@ -299,6 +304,28 @@ for non-obvious gotchas.
   **Manual region** is always-on (no toggle): **left-click-drag** on the graph
   selects ONE region (`sel_a`/`sel_b` fractions; `region_selected` live,
   `region_committed` on release; a plain left-click clears back to the detector).
+  Each yellow edge has a **drag HANDLE** — an arrow tab drawn inside the region
+  (`_draw_handle`), grabbed by pressing within `HANDLE_GRAB` (8) px of the edge
+  (`_edge_at`, nearest edge wins). `_edge_drag` (0/1/2) makes the press move THAT
+  end only instead of starting a new selection, clamped so it can't cross the other
+  end (`MIN_SEL`); hovering one sets the HSIZE cursor (`_set_edge_hover`) and
+  brightens the tab. Release commits like any region drag, so a playing preview
+  follows. The DETECTOR's blue **chop boundaries drag the same way** (so one piece
+  can be nudged without re-tuning the sliders for the whole file): `_seg_edge_at`
+  finds the nearest boundary within `HANDLE_GRAB`, `_seg_drag`/`_seg_hover` are
+  `Vector2i(segment, edge)` (edge 0=start, 1=end; x<0 = none), and `_drag_seg_edge`
+  clamps each edge between its own partner (`SEG_MIN_FRAMES`) and the neighbouring
+  piece so pieces stay ordered and non-empty. It mutates `_graph.segments` IN PLACE,
+  which is exactly what `_effective_segments()` returns, so Make chops / Play chops
+  follow with no extra plumbing (both already take float frames). Signals
+  `segments_edited(i)` (live -> `_on_segments_edited` status line) /
+  `segments_committed` (-> `_on_segments_committed`, re-previews). Boundary tabs are
+  blue (`_draw_handle`'s `tint`) and drawn on every boundary up to `SEG_HANDLE_MAX`,
+  else only on the hovered one. NOT persisted (chopping.json holds detector PARAMS);
+  a slider move re-detects and discards them, which `_on_param_changed` says out loud
+  via `_chop_edited`. A manual region hides the boundaries, so the two never fight.
+  Golden-tested headlessly (28 assertions):
+  `Godot..._console.exe --headless --path app --script tests/test_wavegraph_handles.gd`.
   **Right-click-drag** sets the height (silence threshold). Seek is on the strip
   below (the graph no longer seeks). `_graph.has_manual_sel()` gates everything:
   `_effective_segments()` returns the region (one frame pair) when a selection is
@@ -341,6 +368,14 @@ for non-obvious gotchas.
   ends to a rising zero crossing and refine the length by window SSD. `_sl_finished`
   sets the green region + Xfade, ticks Crossfade + Loop, and auto-previews. Golden-
   tested (find_period periodic vs texture, suggest_loop region validity).
+  **Min loop s** (`_minloop_edit`, next to Xfade ms; 0 = off) sets a MINIMUM length
+  for the suggestion: `_suggest_loop` passes `--min-s N` to loopfind, where PERIODIC
+  content grows by WHOLE cycles (`ceil(need/period)` — a part-cycle would land the
+  wrap off-beat) and TEXTURE widens its plateau cap (`max(2.5, min_s)`), then
+  `_enforce_min` extends the end (pulling the start back only if the file runs out)
+  and re-snaps the end to a zero crossing only when that still meets the minimum.
+  A file shorter than the minimum returns the longest loop it can with `short: true`
+  — reported in the status line, never an error.
 - Chops are first-class files at once (play, tag, re-chop) and INHERIT the
   parent's tags (`_inherit_tags_to` writes userdata for each new path before the
   merge/refresh). Never auto-chop.
@@ -380,7 +415,12 @@ for non-obvious gotchas.
   script (via `runpy`, exact CLI preserved). **PyInstaller** freezes it into one
   `tool/tool.exe` (onedir) bundling Python + deps. The app's `_exec_tool` runs
   `tool/tool.exe <cmd> <args>` when that exe exists (checked at `res://../tool/`),
-  else falls back to `py <script>.py` (dev). The app sets `SOUNDLIB_REPO` (=
+  else falls back to `py <script>.py` (dev). **STALENESS GUARD**: tool.exe is a
+  frozen SNAPSHOT of `indexer/*.py`, so `_tool_exe()` returns "" (-> `py`) when any
+  `indexer/*.py` is NEWER than the exe (`_indexer_newest_mtime`, cached) — otherwise
+  a dev edit is silently shadowed by the old build and the feature "doesn't work"
+  in the app while working from the CLI (see LESSONS_LEARNT). A shipped standalone
+  has no `indexer/` dir, so it always uses the exe. The app sets `SOUNDLIB_REPO` (=
   `res://..`) so the (relocated/frozen) scripts resolve `app/index.json` +
   `library.cfg` — every script's `REPO`/`INDEX` honours that env var.
 - `_load_index` reads `index.json` from the globalized DISK path (not `res://`,
@@ -407,7 +447,7 @@ for non-obvious gotchas.
 - Batch chop suggestions only: `py indexer/suggest_chops.py`  (-> chopping.json)
 - Batch loudness only: `py indexer/loudness.py`  (-> loudness.json; rms+peak dBFS)
 - Decode a non-WAV (mp3/…) to a sibling WAV: `py indexer/to_wav.py <src> <result.json>`
-- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json]`
+- Suggest a loop region for one file: `py indexer/loopfind.py <audio> [out.json] [--min-s N]`
 - Bake a seamless loop: `py indexer/loopify.py <audio> <spec.json> <result.json>`
 - Build/update semantic index: `py indexer/embed.py [--only-missing]`  (-> library_root/embeddings.npz)
 - Build/update audio fingerprints: `py indexer/fingerprint.py [--only-missing]`  (-> library_root/fingerprints.npz)

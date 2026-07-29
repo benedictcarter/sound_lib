@@ -168,6 +168,48 @@ def test_loopfind_suggest_returns_valid_region(tmp_path):
     assert r["crossfade_ms"] >= 0.0
 
 
+def test_loopfind_min_s_grows_the_region(tmp_path):
+    """--min-s must lengthen the suggested loop. The impulse train stops at 1.4 s
+    of a 4 s file, so the natural (onset-run-bounded) suggestion is ~1.2 s and the
+    minimum has room to grow it in whole 100 ms cycles."""
+    import loopfind as LP
+    sr = SR
+    x = np.zeros((int(4.0 * sr), 1))
+    period = int(0.10 * sr)
+    for k in range(1, 15):
+        i = k * period
+        x[i:i + int(0.01 * sr), 0] = np.random.default_rng(k).standard_normal(int(0.01 * sr)) * 0.6
+    p = tmp_path / "imp.wav"
+    sf.write(str(p), x, sr, subtype="PCM_16")
+    base = LP.suggest_loop(str(p))
+    assert base["end_s"] - base["start_s"] < 2.5           # premise of this test
+    r = LP.suggest_loop(str(p), min_s=2.5)
+    assert r["end_s"] - r["start_s"] >= 2.5
+    assert r["end_s"] - r["start_s"] > base["end_s"] - base["start_s"]
+    assert not r["short"] and r["end_s"] <= r["duration"]
+
+
+def test_loopfind_min_s_capped_by_file_length(tmp_path):
+    """An impossible minimum degrades to the longest loop the file allows and is
+    flagged `short` — it must never run past the end or invert the region."""
+    import loopfind as LP
+    rng = np.random.default_rng(3)
+    x = (rng.standard_normal((int(1.0 * SR), 1)) * 0.3)
+    p = tmp_path / "noise.wav"
+    sf.write(str(p), x, SR, subtype="PCM_16")
+    r = LP.suggest_loop(str(p), min_s=10.0)
+    assert r["ok"] and r["short"]
+    assert 0.0 <= r["start_s"] < r["end_s"] <= r["duration"]
+    assert r["crossfade_ms"] <= (r["end_s"] - r["start_s"]) * 1000.0 * 0.5 + 1e-6
+
+
+def test_loopfind_parse_args_splits_min_s():
+    import loopfind as LP
+    assert LP.parse_args(["a.wav", "o.json", "--min-s", "2.5"]) == (["a.wav", "o.json"], 2.5)
+    assert LP.parse_args(["a.wav", "--min-s=1.25", "o.json"]) == (["a.wav", "o.json"], 1.25)
+    assert LP.parse_args(["a.wav"]) == (["a.wav"], 0.0)
+
+
 # ---- atomic JSON writer ---------------------------------------------------
 def test_write_json_atomic_overwrites_cleanly(tmp_path):
     p = tmp_path / "x.json"
