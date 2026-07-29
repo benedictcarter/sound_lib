@@ -3,6 +3,10 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **Draggable chop boundaries** (`feat/chop-edge-handles`) — the blue detector edges
+  drag like the region ones, clamped between their partner and the neighbouring
+  piece; `_effective_segments` reads the same array so Make/Play chops follow.
+  UAT passed; merged to master.
 - **Draggable handles on the yellow region edges** (`feat/region-drag-handles`) —
   arrow tabs on both edges of the manual region, each dragging one end only; brought
   with it the headless `tests/test_wavegraph_handles.gd` input harness.
