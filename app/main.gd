@@ -562,6 +562,7 @@ var _pa_paths_file: String = ""
 var _pa_pending: Array = []               # rel paths queued while a run is in flight
 var _xfade_chk: CheckButton             # preview the region as a crossfaded loop
 var _xfade_edit: LineEdit               # crossfade length (ms) for preview + Make loop
+var _minloop_edit: LineEdit             # minimum length (s) Suggest loop must reach
 var _loop_spec_path: String = ""
 var _loop_result_path: String = ""
 
@@ -809,10 +810,34 @@ func _repo_root() -> String:
 	return ProjectSettings.globalize_path("res://../").simplify_path()
 
 
-# The frozen standalone tool (bundles Python + deps), if present; else "".
+# The frozen standalone tool (bundles Python + deps), if present AND not stale; else "".
+# tool.exe is a SNAPSHOT of indexer/*.py taken at freeze time. In a dev checkout the
+# sources sit right next to it and change constantly, so blindly preferring the exe
+# runs OLD code: a newly added flag is passed to a build that never heard of it and is
+# silently ignored, and you debug a feature that never actually ran (that is exactly
+# how --min-s "failed" — see LESSONS_LEARNT). If any indexer source is newer than the
+# exe, the build is out of date: fall back to `py script.py`. A shipped standalone has
+# no indexer/ dir, so it always takes the exe.
 func _tool_exe() -> String:
 	var exe := _repo_root().path_join("tool/tool.exe")
-	return exe if FileAccess.file_exists(exe) else ""
+	if not FileAccess.file_exists(exe):
+		return ""
+	return "" if _indexer_newest_mtime() > FileAccess.get_modified_time(exe) else exe
+
+
+# Newest mtime across indexer/*.py (0 when there are no sources, i.e. a shipped build).
+# Cached — this is consulted on every job launch and the sources don't move mid-session.
+var _indexer_mtime := -1
+func _indexer_newest_mtime() -> int:
+	if _indexer_mtime >= 0:
+		return _indexer_mtime
+	_indexer_mtime = 0
+	var dir := _repo_root().path_join("indexer")
+	for f in DirAccess.get_files_at(dir):
+		if f.ends_with(".py"):
+			_indexer_mtime = maxi(_indexer_mtime,
+				FileAccess.get_modified_time(dir.path_join(f)))
+	return _indexer_mtime
 
 
 # Run an indexer command. args[0] is the .py script path used in dev (py script.py);
@@ -1603,6 +1628,18 @@ func _build_analyser(root: VBoxContainer) -> void:
 		+ "and Make loop (longer = smoother but blends more of the ends). Enter applies."
 	_xfade_edit.text_submitted.connect(func(_t): _on_xfade_changed(true))
 	loopbar.add_child(_xfade_edit)
+
+	var mlab := Label.new()
+	mlab.text = "Min loop s"
+	loopbar.add_child(mlab)
+	_minloop_edit = LineEdit.new()
+	_minloop_edit.text = "0"
+	_minloop_edit.custom_minimum_size = Vector2(48, 0)
+	_minloop_edit.tooltip_text = "Minimum length (seconds) of the loop Suggest loop " \
+		+ "picks. 0 = no minimum. Rhythmic sounds grow by WHOLE cycles (the beat stays " \
+		+ "intact across the wrap); textures widen their sustain window. A file shorter " \
+		+ "than this gives the longest loop it can."
+	loopbar.add_child(_minloop_edit)
 
 	# --- Row 3: CHOPS --------------------------------------------------
 	var chopbar := HBoxContainer.new()
@@ -4582,14 +4619,25 @@ func _suggest_loop() -> void:
 		"../indexer/loopfind.py").simplify_path()
 	_sl_busy = true
 	_suggest_loop_btn.disabled = true
-	_an_status.text = "Finding a good loop…"
+	var min_s := _min_loop_s()
+	_an_status.text = "Finding a good loop…" if min_s <= 0.0 \
+		else "Finding a good loop (min %.3f s)…" % min_s
 	_sl_thread = Thread.new()
-	_sl_thread.start(_sl_run.bind(script, abs, _sl_result_path))
+	_sl_thread.start(_sl_run.bind(script, abs, _sl_result_path, min_s))
 
 
-func _sl_run(script: String, audio: String, result: String) -> void:
+# The "Min loop s" field, sanitised (blank/garbage/negative -> 0 = no minimum).
+func _min_loop_s() -> float:
+	if _minloop_edit == null:
+		return 0.0
+	return maxf(0.0, _minloop_edit.text.strip_edges().to_float())
+
+
+func _sl_run(script: String, audio: String, result: String, min_s: float) -> void:
 	var output: Array = []
 	var args := [script, audio, result]
+	if min_s > 0.0:
+		args.append_array(["--min-s", "%.4f" % min_s])
 	_exec_tool(args, output)
 	call_deferred("_sl_finished")
 
@@ -4625,8 +4673,14 @@ func _sl_finished() -> void:
 			float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), kind]
 		_make_loop()
 		return
-	_an_status.text = "Suggested loop %.3f–%.3fs (%.0f ms xfade, %s) — auditioning; tweak then Make loop." % [
-		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)), float(d.get("crossfade_ms", 0.0)), kind]
+	# the file itself can be too short for the requested minimum — say so, don't fail
+	var short_note := ""
+	if d.get("short", false):
+		short_note = " — file too short for a %.3f s minimum" % float(d.get("min_s", 0.0))
+	_an_status.text = "Suggested loop %.3f–%.3fs (%.3f s, %.0f ms xfade, %s)%s — auditioning; tweak then Make loop." % [
+		float(d.get("start_s", 0.0)), float(d.get("end_s", 0.0)),
+		float(d.get("end_s", 0.0)) - float(d.get("start_s", 0.0)),
+		float(d.get("crossfade_ms", 0.0)), kind, short_note]
 	_play_chops("loop")                         # audition the crossfaded loop now
 
 
