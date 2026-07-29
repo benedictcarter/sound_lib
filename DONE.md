@@ -3,6 +3,16 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **Drag-and-drop column reordering, remembered** (`feat/reorder-columns`) — drag a
+  header title sideways to move that column; a gold insertion line and a ghost name
+  show where it will land, and the order is saved to prefs so it comes back next
+  launch. Tree has no reorder API, so the app now keeps a LOGICAL id <-> SLOT
+  indirection (`_col_order`/`_col_slot`, `_lcol()`): everything above the Tree still
+  speaks `COL_*`, and only the Tree call sites convert. A press on a title is taken
+  over by the app — travel 6 px and it's a move, release without moving and it's the
+  old sort click. A saved order that's short, stale or corrupt is repaired rather
+  than trusted, so a column can never go missing. Golden test:
+  `tests/test_column_order.gd`.
 - **Consistent column resizing** (`feat/consistent-column-resize`) — a column now
   ends up EXACTLY the width you drag it to. The Tree floored each column at its
   title's text width (29 px for "Ch", 101 px for "Chop pieces", and wider again with
