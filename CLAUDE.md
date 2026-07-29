@@ -173,6 +173,18 @@ for non-obvious gotchas.
   Star click maps via `_star_at` (glyph-width based, exact); `_update_rating_hover`
   shows a gold preview. Columns are resizable (`_on_tree_gui_input` drags header
   dividers — Tree has no native resize); `_col_w`/`COL_DEFAULT_W` hold widths.
+  **Every width goes through `_apply_col(c)`** (`_apply_all_cols` for the lot) —
+  the ONLY writer of a column's width + title. A Tree floors a column at its TITLE
+  text width (+8px) whatever `set_column_custom_minimum_width` says, per-title and
+  wider again with the sort arrow, so `_apply_col` ELIDES the title ("Chop pieces"
+  -> "Chop p…" -> "…") until the drawn width is EXACTLY `_col_w[c]` (measured by
+  asking the Tree: custom min 1 -> `get_column_width` = the floor, live, same
+  frame). Keeps stored == drawn, so a drag never jumps; the resize also starts from
+  the drawn width. Called from `_ready` (after the Tree is in the scene), prefs
+  load, sort click and the live drag in `_process`. Filter controls must be able to
+  shrink with the column too (`clip_text` on Buttons, `minimum_character_width` 0
+  on LineEdits — a Control's `set_size` is clamped by its minimum size). Golden
+  test: `tests/test_column_widths.gd` (see LESSONS_LEARNT).
   **Directory** column (`COL_DIRECTORY`, index 1, after Filename) = the file's full
   ABSOLUTE directory (`_directory_of` = `_abs_path` minus the filename); read-only,
   sortable, text-filterable (`STRING_FILTER_COLS`), tooltip = full path. Adding it

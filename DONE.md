@@ -3,6 +3,14 @@
 Completed tasks, newest first. Moved here from [TODO.md](TODO.md).
 
 ## 2026-07-29
+- **Consistent column resizing** (`feat/consistent-column-resize`) — a column now
+  ends up EXACTLY the width you drag it to. The Tree floored each column at its
+  title's text width (29 px for "Ch", 101 px for "Chop pieces", and wider again with
+  the sort arrow) while `_col_w` kept shrinking, so narrow drags stopped at a random
+  width per column and the next drag jumped. All widths now go through `_apply_col`,
+  which elides the title to fit; the per-column filter controls below shrink with the
+  column too (`clip_text` on the range buttons, `minimum_character_width` 0 on the
+  text filters). Golden test: `tests/test_column_widths.gd`.
 - **Rebuilt the standalone** (`chore/standalone-rebuild`) — fresh `tool/tool.exe`
   (PyInstaller) + `app/SoundLibrary.exe` (Godot export) off the graceful-shutdown
   merge, so the frozen scripts carry `indexer/cancel.py` and can be *asked* to stop

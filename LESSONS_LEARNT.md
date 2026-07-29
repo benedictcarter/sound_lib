@@ -266,3 +266,30 @@ this only exists on Windows. Read the arrays out inside a `with np.load(...) as 
 and let it close. Same visit: `d["vectors"][i]` inside a loop re-decompresses the
 whole array on every iteration — pull `vectors`/`paths` out once (7,400 rows went
 from seconds to instant), which also gets the job to its first cancel check sooner.
+
+## A Tree column can never be narrower than its TITLE — `custom_minimum_width` is only half the story
+Column resizing "worked" but stopped at a different width for every column, and
+after dragging one narrow, the *next* drag on that edge did nothing until the
+mouse had travelled tens of pixels. Cause: `Tree::get_column_minimum_width()`
+takes `MAX(custom_min_width, title text width + panel h-margins)` when
+`column_titles_visible` is on. So the real floor is per-title — measured here at
+29 px for "Ch" but **101 px for "Chop pieces"** — and it *grows* when a sort
+arrow ("  v") is appended, i.e. clicking sort could widen a column. Meanwhile our
+stored `_col_w` kept shrinking past that floor, so state and screen silently
+diverged and every later drag started from a phantom width. Clip content does not
+help (that only removes the *cell* contribution). The fix is to elide the title
+until it fits the width asked for ("Chop pieces" -> "Chop p…" -> "…", floor 22 px,
+and "" floors at 8 px) — and to measure the floor by asking the Tree itself: set
+`custom_minimum_width` to 1 and read `get_column_width()`, which recomputes **live
+in the same frame**, so no re-deriving the engine's font/padding maths (the min-width
+calc uses the *item* font, the title is *drawn* with `title_button_font` — guess
+wrong and it is off by a few px on some themes).
+
+**Same class of bug one row up**: a `Control`'s `set_size()` is clamped by
+`get_combined_minimum_size()`, so a `Button` whose text is 57 px wide *cannot* be
+laid out 28 px wide — the per-column filter buttons kept overhanging into the next
+column when the column was narrowed. `clip_text = true` drops text out of a
+Button's minimum size; `LineEdit` needs `add_theme_constant_override(
+"minimum_character_width", 0)` (it reserves 4 em-spaces ≈ 53 px by default). If a
+widget "won't get smaller", print `get_combined_minimum_size()` before assuming
+the layout code is wrong.
