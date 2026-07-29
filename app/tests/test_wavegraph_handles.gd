@@ -94,5 +94,68 @@ func _initialize() -> void:
 	ck("hover middle -> arrow cursor", g._edge_hover == 0 \
 		and g.mouse_default_cursor_shape == Control.CURSOR_ARROW, str(g._edge_hover))
 
+	# --- the DETECTOR's blue chop boundaries drag the same way ---------------
+	# 500 envelope frames over 1000 px = 1 frame per 2 px, so frame f sits at 2f.
+	g.sel_a = -1.0
+	g.sel_b = -1.0
+	g.segments = [[50, 150], [200, 300], [350, 450]]
+	var seg_commits := [0]
+	var seg_edits := [0]
+	g.segments_committed.connect(func(): seg_commits[0] += 1)
+	g.segments_edited.connect(func(_i): seg_edits[0] += 1)
+
+	ck("boundary found at its x", g._seg_edge_at(400.0) == Vector2i(1, 0),
+		str(g._seg_edge_at(400.0)))
+	ck("both edges of a piece are grabbable", g._seg_edge_at(300.0) == Vector2i(0, 1),
+		str(g._seg_edge_at(300.0)))
+	ck("no boundary mid-piece", g._seg_edge_at(500.0) == Vector2i(-1, -1))
+
+	mb(g, 400.0, true)                       # grab piece 2's START (frame 200 -> x 400)
+	ck("chop boundary grabbed", g._seg_drag == Vector2i(1, 0), str(g._seg_drag))
+	ck("region untouched by a boundary grab", not g.has_manual_sel())
+	mm(g, 340.0, true)
+	mb(g, 340.0, false)
+	ck("boundary moved to frame 170", is_equal_approx(float(g.segments[1][0]), 170.0),
+		str(g.segments[1][0]))
+	ck("its own end untouched", is_equal_approx(float(g.segments[1][1]), 300.0),
+		str(g.segments[1][1]))
+	ck("the piece before is untouched", is_equal_approx(float(g.segments[0][1]), 150.0),
+		str(g.segments[0][1]))
+	ck("boundary drag committed", seg_commits[0] == 1 and seg_edits[0] > 0,
+		"%d/%d" % [seg_commits[0], seg_edits[0]])
+
+	# a boundary can't cross its own partner...
+	mb(g, 340.0, true)                       # piece 2's start, now at frame 170
+	mm(g, 900.0, true)                       # drag it way past its own end (frame 300)
+	mb(g, 900.0, false)
+	ck("start clamped below its end", float(g.segments[1][0]) < float(g.segments[1][1]),
+		"%s < %s" % [g.segments[1][0], g.segments[1][1]])
+	# ...nor step over the neighbouring piece
+	mb(g, 600.0, true)                       # piece 2's END (frame 300)
+	mm(g, 900.0, true)                       # drag it into piece 3 (starts at frame 350)
+	mb(g, 900.0, false)
+	ck("end clamped at the next piece", float(g.segments[1][1]) <= float(g.segments[2][0]),
+		"%s <= %s" % [g.segments[1][1], g.segments[2][0]])
+
+	# a press away from every boundary still starts a fresh region selection
+	mb(g, 500.0, true)
+	ck("mid-piece press is a new region", g._seg_drag.x < 0 and is_equal_approx(g.sel_a, 0.5),
+		"seg=%s a=%f" % [g._seg_drag, g.sel_a])
+	mm(g, 600.0, true)
+	mb(g, 600.0, false)
+	ck("region wins once selected", g.has_manual_sel() \
+		and g._seg_edge_at(float(g.segments[0][0]) * 2.0) == Vector2i(-1, -1),
+		"boundaries are hidden behind a manual region")
+
+	# hovering a boundary sets the resize cursor too
+	g.sel_a = -1.0
+	g.sel_b = -1.0
+	mm(g, 100.0, false)                      # frame 50 = piece 1's start
+	ck("hover boundary -> HSIZE cursor", g._seg_hover == Vector2i(0, 0) \
+		and g.mouse_default_cursor_shape == Control.CURSOR_HSIZE, str(g._seg_hover))
+	mm(g, 500.0, false)
+	ck("hover mid-piece -> arrow cursor", g._seg_hover.x < 0 \
+		and g.mouse_default_cursor_shape == Control.CURSOR_ARROW, str(g._seg_hover))
+
 	print("\n", "ALL HANDLE TESTS PASSED" if fails == 0 else "%d FAILURE(S)" % fails)
 	quit(1 if fails > 0 else 0)

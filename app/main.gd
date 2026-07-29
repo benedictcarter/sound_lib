@@ -152,6 +152,8 @@ class WaveGraph extends Control:
 	signal seek_requested(fraction: float) # (kept for the seek strip below)
 	signal region_selected(a: float, b: float)  # left-drag: selected [a,b] fractions (live)
 	signal region_committed()              # left-release: region finalised (rebuild preview)
+	signal segments_edited(i: int)         # a CHOP boundary was dragged (live)
+	signal segments_committed()            # chop boundary drag finished (rebuild preview)
 
 	var levels := PackedFloat32Array()
 	var segments: Array = []          # [[start_frame, end_frame], ...]
@@ -176,6 +178,63 @@ class WaveGraph extends Control:
 	var _edge_drag := 0
 	var _edge_hover := 0
 
+	# The DETECTOR's chop boundaries (blue) drag the same way, so a piece the
+	# threshold cut a hair too early can be nudged instead of re-tuning the sliders
+	# for the whole file. `_seg_drag`/`_seg_hover` are Vector2i(segment, edge) with
+	# edge 0 = start, 1 = end; x < 0 means none. Every boundary is independent, and
+	# clamped so it can't cross its own partner or step over a neighbouring piece.
+	const SEG_HANDLE_MAX := 40        # draw every tab up to this many boundaries
+	const SEG_MIN_FRAMES := 1.0       # smallest piece a boundary drag can shrink to
+	var _seg_drag := Vector2i(-1, -1)
+	var _seg_hover := Vector2i(-1, -1)
+
+	## The chop boundary nearest x, if one is within the grab zone. Only live when
+	## the blue boundaries are the thing on screen — a manual region hides them.
+	func _seg_edge_at(x: float) -> Vector2i:
+		if has_manual_sel() or segments.is_empty() or levels.size() == 0:
+			return Vector2i(-1, -1)
+		var w := maxf(size.x, 1.0)
+		var n := float(levels.size())
+		var best := Vector2i(-1, -1)
+		var bestd := HANDLE_GRAB
+		for i in segments.size():
+			for e in 2:
+				var d := absf(x - float(segments[i][e]) / n * w)
+				if d <= bestd:
+					bestd = d
+					best = Vector2i(i, e)
+		return best
+
+	func _set_seg_hover(s: Vector2i) -> void:
+		if s == _seg_hover:
+			return
+		_seg_hover = s
+		mouse_default_cursor_shape = \
+			Control.CURSOR_HSIZE if s.x >= 0 else Control.CURSOR_ARROW
+		queue_redraw()
+
+	## Move one boundary to frame `f`, clamped between its neighbours so pieces stay
+	## ordered and non-empty (the piece either side keeps at least SEG_MIN_FRAMES).
+	func _drag_seg_edge(f: float) -> void:
+		var i := _seg_drag.x
+		var e := _seg_drag.y
+		if i < 0 or i >= segments.size():
+			return
+		var n := float(levels.size())
+		var lo := 0.0
+		var hi := n
+		if e == 0:
+			hi = float(segments[i][1]) - SEG_MIN_FRAMES
+			if i > 0:
+				lo = float(segments[i - 1][1])          # can't back over the piece before
+		else:
+			lo = float(segments[i][0]) + SEG_MIN_FRAMES
+			if i < segments.size() - 1:
+				hi = float(segments[i + 1][0])          # nor run into the piece after
+		segments[i][e] = clampf(f, lo, maxf(lo, hi))
+		segments_edited.emit(i)
+		queue_redraw()
+
 	## Which edge handle (if any) sits under x. Nearest wins when the region is
 	## narrower than the grab zone, so the two handles never fight over a click.
 	func _edge_at(x: float) -> int:
@@ -198,8 +257,9 @@ class WaveGraph extends Control:
 		queue_redraw()
 
 	func _notification(what: int) -> void:
-		if what == NOTIFICATION_MOUSE_EXIT and _edge_drag == 0:
+		if what == NOTIFICATION_MOUSE_EXIT and _edge_drag == 0 and _seg_drag.x < 0:
 			_set_edge_hover(0)
+			_set_seg_hover(Vector2i(-1, -1))
 
 	const TOP_DB := 0.0
 	const BOT_DB := -90.0
@@ -237,14 +297,24 @@ class WaveGraph extends Control:
 			if event.button_index == MOUSE_BUTTON_LEFT:
 				if event.pressed:
 					_edge_drag = _edge_at(event.position.x)
+					_seg_drag = _seg_edge_at(event.position.x) if _edge_drag == 0 \
+						else Vector2i(-1, -1)
 					if _edge_drag != 0:            # grabbed a handle: keep the region,
 						var lo := minf(sel_a, sel_b)   # normalise so sel_a is always
 						var hi := maxf(sel_a, sel_b)   # the START edge while dragging
 						sel_a = lo
 						sel_b = hi
+					elif _seg_drag.x >= 0:         # grabbed a chop boundary: leave the
+						pass                       # detector segments alone, just drag
 					else:
 						sel_a = _frac_at_x(event.position.x)
 						sel_b = sel_a
+					queue_redraw()
+					accept_event()
+				elif _seg_drag.x >= 0:            # released a chop boundary
+					_seg_drag = Vector2i(-1, -1)
+					_set_seg_hover(_seg_edge_at(event.position.x))
+					segments_committed.emit()
 					queue_redraw()
 					accept_event()
 				elif _edge_drag != 0:              # released a handle: keep + commit
@@ -275,6 +345,10 @@ class WaveGraph extends Control:
 		elif event is InputEventMouseMotion:
 			if (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
 				var f := _frac_at_x(event.position.x)
+				if _seg_drag.x >= 0:               # dragging a blue chop boundary
+					_drag_seg_edge(f * float(levels.size()))
+					accept_event()
+					return
 				# a handle drag moves ONE end and can't push it past the other
 				if _edge_drag == 1:
 					sel_a = clampf(f, 0.0, maxf(sel_b - MIN_SEL, 0.0))
@@ -289,7 +363,10 @@ class WaveGraph extends Control:
 				threshold_picked.emit(_db_at_y(event.position.y))
 				accept_event()
 			else:
-				_set_edge_hover(_edge_at(event.position.x))   # cursor + handle glow
+				var eh := _edge_at(event.position.x)
+				_set_edge_hover(eh)                          # cursor + handle glow
+				_set_seg_hover(_seg_edge_at(event.position.x) if eh == 0 \
+					else Vector2i(-1, -1))
 
 	# Kept sounds are green; the bits being chopped away are grey (still drawn).
 	func _draw() -> void:
@@ -331,13 +408,19 @@ class WaveGraph extends Control:
 			_draw_handle(m_lo * w, true, _edge_hover == 1 or _edge_drag == 1)
 			_draw_handle(m_hi * w, false, _edge_hover == 2 or _edge_drag == 2)
 		elif has_segs:
-			# detector chop boundaries: start + end of every kept piece, in blue
+			# detector chop boundaries: start + end of every kept piece, in blue, each
+			# with its own grab tab. On a heavily chopped file the tabs would be wall-
+			# to-wall noise, so past SEG_HANDLE_MAX boundaries only the one you're
+			# pointing at draws a tab — the drag still works on every one of them.
 			var bcol := Color(0.30, 0.62, 1.0, 0.9)
-			for s in segments:
-				var xs := float(int(s[0])) / n * w
-				var xe := float(int(s[1])) / n * w
-				draw_line(Vector2(xs, 0), Vector2(xs, h), bcol, 1.0)
-				draw_line(Vector2(xe, 0), Vector2(xe, h), bcol, 1.0)
+			var all_tabs := segments.size() * 2 <= SEG_HANDLE_MAX
+			for i in segments.size():
+				for e in 2:
+					var x := float(int(segments[i][e])) / n * w
+					var hot := _seg_hover == Vector2i(i, e) or _seg_drag == Vector2i(i, e)
+					draw_line(Vector2(x, 0), Vector2(x, h), bcol, 1.5 if hot else 1.0)
+					if all_tabs or hot:
+						_draw_handle(x, e == 0, hot, bcol)
 		# silence threshold (height) + its dB value — always shown; right-drag sets it
 		var ty := _yfor(threshold_db)
 		var ocol := Color(1.0, 0.6, 0.1)
@@ -357,11 +440,13 @@ class WaveGraph extends Control:
 			draw_line(Vector2(px, 0), Vector2(px, h), Color(1, 1, 1, 0.85), 1.0)
 			draw_circle(Vector2(px, track_y), 5.0, Color(1, 1, 1, 0.95))
 
-	## Grab tab on one region edge: a yellow arrow pointing the way that edge moves.
-	## It sits INSIDE the region (so the pair never overlap on a narrow selection)
-	## and brightens while hovered or dragged.
-	func _draw_handle(x: float, is_start: bool, hot: bool) -> void:
-		var col := Color(1.0, 0.96, 0.60) if hot else Color(1.0, 0.85, 0.2)
+	## Grab tab on one edge: an arrow pointing the way that edge moves. It sits INSIDE
+	## its piece (so the pair never overlap on a narrow one) and brightens while
+	## hovered or dragged. `tint` colours it — yellow for the manual region, blue for
+	## a detector chop boundary, so the two kinds of edge stay tellable apart.
+	func _draw_handle(x: float, is_start: bool, hot: bool,
+			tint: Color = Color(1.0, 0.85, 0.2)) -> void:
+		var col := tint.lightened(0.5) if hot else tint
 		var cy := size.y * 0.42
 		var x0 := clampf(x if is_start else x - HANDLE_W, 0.0, maxf(size.x - HANDLE_W, 0.0))
 		draw_rect(Rect2(x0, cy - HANDLE_H * 0.5, HANDLE_W, HANDLE_H), col)
@@ -566,6 +651,7 @@ var _an_frame_s: float = 0.02
 var _an_duration: float = 0.0
 var _an_rec: Variant = null               # record currently in the analyser
 var _an_suggested: float = DEF_SILENCE_DB
+var _chop_edited := false                 # chop boundaries hand-dragged since detection
 var _sil_slider: HSlider
 var _gap_slider: HSlider
 var _snd_slider: HSlider
@@ -1767,13 +1853,16 @@ func _build_analyser(root: VBoxContainer) -> void:
 	_graph = WaveGraph.new()
 	_graph.custom_minimum_size = Vector2(0, 120)
 	_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_graph.tooltip_text = "Left-click-drag: select a region to chop/play. " \
-		+ "Right-click-drag: set the height (silence threshold) — also returns to " \
-		+ "auto/detector. Seek on the strip below."
+	_graph.tooltip_text = "Left-click-drag: select a region to chop/play. Drag a " \
+		+ "yellow region edge or a blue chop boundary by its tab to nudge just that " \
+		+ "edge. Right-click-drag: set the height (silence threshold) — also returns " \
+		+ "to auto/detector. Seek on the strip below."
 	_graph.threshold_picked.connect(_on_graph_threshold_picked)
 	_graph.seek_requested.connect(_on_graph_seek)
 	_graph.region_selected.connect(_on_graph_region_selected)
 	_graph.region_committed.connect(_on_region_committed)
+	_graph.segments_edited.connect(_on_segments_edited)
+	_graph.segments_committed.connect(_on_segments_committed)
 	root.add_child(_graph)
 
 	_seekbar = SeekBar.new()
@@ -4285,6 +4374,29 @@ func _on_region_committed() -> void:
 		_play_chops()
 
 
+# Live feedback while a BLUE chop boundary is dragged: name the piece and its new
+# in/out times. The graph owns the edit (it mutates `segments` in place), and
+# `_effective_segments` reads that same array, so Make chops / Play chops follow the
+# nudge with no extra plumbing.
+func _on_segments_edited(i: int) -> void:
+	var segs: Array = _graph.segments
+	if i < 0 or i >= segs.size():
+		return
+	var t0 := float(segs[i][0]) * _an_frame_s
+	var t1 := float(segs[i][1]) * _an_frame_s
+	_an_status.text = "Piece %d/%d  %s–%s  (%.3f s) — drag boundaries; Make chops to write." % [
+		i + 1, segs.size(), _fmt_time(t0), _fmt_time(t1), t1 - t0]
+	_chop_edited = true
+
+
+# A chop boundary drag finished: follow it in a running preview, exactly like a
+# region drag. NOT persisted to chopping.json — that stores the detector PARAMS, and
+# moving a slider re-detects from scratch (which is what a slider should do).
+func _on_segments_committed() -> void:
+	if _playing_chops and not _effective_segments().is_empty():
+		_play_chops()
+
+
 # Segments to chop/play: the drag-selected region (one piece) when one is picked,
 # otherwise the detector's segments. WYSIWYG with the green in the graph.
 func _effective_segments() -> Array:
@@ -5010,6 +5122,10 @@ func _on_param_changed() -> void:
 	_graph.threshold_db = _sil_slider.value
 	_graph.segments = segs
 	_graph.queue_redraw()
+	# re-detecting replaces the boundaries wholesale, so any hand-dragged ones are
+	# gone; say so rather than letting the edit vanish silently.
+	var was_edited := _chop_edited
+	_chop_edited = false
 	var name := String(_an_rec.get("filename", "")) if typeof(_an_rec) == TYPE_DICTIONARY else "?"
 	# If nothing survived, say WHY: usually Min sound discarding short pieces
 	# (e.g. tight gun bursts) rather than the threshold finding nothing.
@@ -5020,8 +5136,9 @@ func _on_param_changed() -> void:
 			_an_status.text = "%s  →  0 pieces  (%d below Min sound %.3f s — lower Min sound)" % [
 				name, raw.size(), _snd_slider.value]
 			return
-	_an_status.text = "%s  →  %d piece%s  (%d gaps)" % [
-		name, segs.size(), "" if segs.size() == 1 else "s", maxi(0, segs.size() - 1)]
+	_an_status.text = "%s  →  %d piece%s  (%d gaps)%s" % [
+		name, segs.size(), "" if segs.size() == 1 else "s", maxi(0, segs.size() - 1),
+		"  — re-detected, dragged boundaries reset" if was_edited else ""]
 
 
 # A USER param change (slider drag or click on the graph): recompute live AND
