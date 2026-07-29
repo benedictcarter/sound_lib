@@ -191,3 +191,23 @@ instead, on the ACTUAL `load_from_file` == null, decode that one file to a 16-bi
 sibling (`<stem>_16bit.wav`, via soundfile which reads EXTENSIBLE) and play that;
 reuse the sibling next time. Same on-demand pattern as the non-WAV mp3/ogg decode.
 Cost: chased "24-bit unsupported" before testing that plain 24-bit actually loads.
+
+## Testing a code-built Control headlessly: `--script`, and NEVER call `_draw()`
+This app builds its whole UI in `main.gd`, so there is no scene to poke and no way
+to regression-test mouse handling — until you realise a `SceneTree` script can do
+it: `Godot..._console.exe --headless --path app --script tests/foo.gd`, then
+`load("res://main.gd").WaveGraph.new()` (inner classes are reachable through the
+outer script), `root.add_child(g)`, set `size`, and feed hand-built
+`InputEventMouseButton` / `InputEventMouseMotion` straight into `_gui_input`.
+Two non-obvious conditions: (1) the control MUST be in the tree, because
+`accept_event()` calls `get_viewport().set_input_as_handled()` and errors on an
+orphan node; (2) motion events need `button_mask` set by hand — Godot fills that
+in from real input, not from `pressed` on the preceding button event. And you
+CANNOT verify rendering by calling `_draw()` yourself: every draw call fails with
+"Drawing is only allowed inside this node's `_draw()`…" because CanvasItem only
+accepts commands while servicing NOTIFICATION_DRAW. Set the state, call
+`queue_redraw()`, and return `false` from the SceneTree's `_process` so real
+frames run — errors then surface as real errors. This caught nothing on the first
+run, which is the point: it turned "drag the handle and squint" into a 2-second
+check that an edge drag moves one end, clamps against the other, and doesn't steal
+a press meant to start a fresh selection.
