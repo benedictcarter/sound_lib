@@ -1091,6 +1091,9 @@ func _indexer_newest_mtime() -> int:
 		return _indexer_mtime
 	_indexer_mtime = 0
 	var dir := _repo_root().path_join("indexer")
+	if not DirAccess.dir_exists_absolute(dir):
+		return _indexer_mtime          # shipped build: no sources, so nothing can be stale.
+		                               # (Listing a missing dir logs an ERROR every launch.)
 	for f in DirAccess.get_files_at(dir):
 		if f.ends_with(".py"):
 			_indexer_mtime = maxi(_indexer_mtime,
